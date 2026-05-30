@@ -3,7 +3,7 @@ import numpy as np
 
 
 class VideoPreprocessor:
-    def __init__(self, max_frame, img_size=224):
+    def __init__(self, max_frame, img_size):
         self.max_frame = max_frame
         self.img_size = img_size
 

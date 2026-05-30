@@ -6,7 +6,7 @@ from video_preprocessor import VideoPreprocessor
 FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_CARTELLA = os.path.abspath(
-    os.path.join(FILE_ATTUALE, "..", "..", "dataset")
+    os.path.join(FILE_ATTUALE, "..", "dataset")
 )
 MANIFEST = os.path.abspath(
     os.path.join(DATASET_CARTELLA, "manifest.csv")
@@ -67,8 +67,8 @@ for _, row in train.iterrows():
     np.save(percorso_output, frames)
     np.save(percorso_mask, mask)
 
-    print(f"Salvato: {path}")
-    print(f"Numero frame originali: {total_frames}")
-    print(f"Shape finale frames: {frames.shape}")
-    print(f"Shape mask: {mask.shape}")
-    print(f"Mask: {mask}")
+    #print(f"Salvato: {path}")
+    #print(f"Numero frame originali: {total_frames}")
+    #print(f"Shape finale frames: {frames.shape}")
+    #print(f"Shape mask: {mask.shape}")
+    #print(f"Mask: {mask}")
