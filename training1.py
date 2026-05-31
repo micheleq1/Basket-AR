@@ -10,6 +10,46 @@ from GRUmodel import GRUmodel
 import torch.nn as nn
 import torch.optim as optim
 
+def aggiorna_confusion_matrix(conf_matrix, labels, preds):
+    """
+    conf_matrix[classe_vera, classe_predetta]
+    """
+    labels = labels.cpu()
+    preds = preds.cpu()
+
+    for true_label, pred_label in zip(labels, preds):
+        conf_matrix[true_label, pred_label] += 1
+
+    return conf_matrix
+
+
+def stampa_confusion_matrix(conf_matrix, idx_to_class):
+    print("\nConfusion Matrix Validation")
+    print("Righe = classe vera | Colonne = classe predetta\n")
+
+    class_names = [
+        idx_to_class[i]
+        for i in range(len(idx_to_class))
+    ]
+
+    header = "vera\\pred".ljust(18)
+
+    for name in class_names:
+        header += name[:10].ljust(12)
+
+    print(header)
+
+    for i, row in enumerate(conf_matrix):
+        line = class_names[i][:16].ljust(18)
+
+        for value in row:
+            line += str(value.item()).ljust(12)
+
+        print(line)
+
+    print()
+
+
 
 FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
@@ -135,7 +175,7 @@ mobilenet = MobileNetv2().to(device)
 num_classes = len(train_dataset.class_to_idx)
 grumodel = GRUmodel(
     input_size=1280,
-    hidden_size=128,
+    hidden_size=64,
     num_layers=1,
     num_classes=num_classes
 ).to(device)
@@ -208,6 +248,12 @@ for epoch in range(num_epochs):
     val_correct = 0
     val_total = 0
 
+    val_conf_matrix = torch.zeros(
+        num_classes,
+        num_classes,
+        dtype=torch.long
+    )
+
     with torch.no_grad():
         for frames, masks, labels in val_dataloader:
             frames = frames.to(device)
@@ -225,6 +271,11 @@ for epoch in range(num_epochs):
 
             val_correct += (preds == labels).sum().item()
             val_total += labels.size(0)
+            val_conf_matrix = aggiorna_confusion_matrix(
+                val_conf_matrix,
+                labels,
+                preds
+        )
 
     val_loss = val_loss_sum / val_total
     val_acc = val_correct / val_total
@@ -233,6 +284,10 @@ for epoch in range(num_epochs):
     print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
     print(f"Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
     print("-" * 50)
+    stampa_confusion_matrix(
+        val_conf_matrix,
+        train_dataset.idx_to_class
+)
 
     # Salvo il miglior modello
     if val_acc > best_val_acc:
@@ -247,7 +302,7 @@ for epoch in range(num_epochs):
             "class_to_idx": train_dataset.class_to_idx,
             "idx_to_class": train_dataset.idx_to_class,
             "input_size": 1280,
-            "hidden_size": 128,
+            "hidden_size": 64,
             "num_layers": 1,
             "num_classes": num_classes
         }, "best_gru_basket_model.pth")
