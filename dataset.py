@@ -3,6 +3,9 @@ import pandas as pd
 import torch
 from torch.utils.data import Dataset
 from video_preprocessor import VideoPreprocessor
+# Importiamo transforms e il sottomodulo functional (abbreviato in F)
+from torchvision import transforms
+import torchvision.transforms.functional as F
 
 
 class VideoDataset(Dataset):
@@ -25,9 +28,15 @@ class VideoDataset(Dataset):
         }
 
         self.video_split = manifest[manifest["split"] == split].reset_index(drop=True)
+        
+        self.split = split 
 
         self.video_dir = video_dir
         self.transform = transform
+
+        conteggi = self.video_split.iloc[:, 5].value_counts()   
+        soglia_media = conteggi.mean()
+        self.classi_rare = conteggi[conteggi < soglia_media].index.tolist()
 
         self.preprocessor = VideoPreprocessor(maxFrame, imgSize)
 
@@ -52,8 +61,19 @@ class VideoDataset(Dataset):
         mask = torch.from_numpy(mask).long()
 
         if self.transform:
-            frames = self.transform(frames)
+           
+            if self.split == "train" and label_name in self.classi_rare:
+                
+                #Flip Orizzontale casuale
+                if torch.rand(1).item() > 0.5:
+                    frames = torch.stack([F.hflip(f) for f in frames])
 
+                # Luminosità casuale
+                bright_factor = torch.empty(1).uniform_(0.8, 1.2).item()
+                frames = torch.stack([F.adjust_brightness(f, bright_factor) for f in frames])
+
+        # Normalizzazione standard finale per tutti i video
+        frames = torch.stack([self.transform(f) for f in frames])
         label = torch.tensor(label, dtype=torch.long)
 
         return frames, mask, label
