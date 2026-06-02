@@ -81,7 +81,7 @@ train_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
     split="train",
-    maxFrame=64,   
+    maxFrame=48,   
     imgSize=224,
     transform=mobilenet_transforms  
     )
@@ -90,7 +90,7 @@ validation_dataset = VideoDataset(
         manifest_path=MANIFEST,
         video_dir=DATASET_CARTELLA,
         split="val",
-        maxFrame=64,   
+        maxFrame=48,   
         imgSize=224,
         transform=mobilenet_transforms  
     )   
@@ -99,7 +99,7 @@ test_dataset = VideoDataset(
         manifest_path=MANIFEST,
         video_dir=DATASET_CARTELLA,
         split="test",
-        maxFrame=64,   
+        maxFrame=48,   
         imgSize=224,
         transform=mobilenet_transforms  
     )
@@ -126,13 +126,17 @@ class_count = np.bincount(
 
 print(f"-> Distribuzione classi nel Train: {class_count}")
 
-# Calcolo i pesi inversi, gestendo eventuali classi con 0 elementi nel train
 class_weights = np.zeros(num_classes, dtype=np.float32)
 
-class_weights[class_count > 0] = 1.0 / class_count[class_count > 0]
+class_weights[class_count > 0] = len(train_labels_numeric) / (
+    num_classes * class_count[class_count > 0]
+)
+
+print(f"-> Pesi classi per Weighted Loss: {class_weights}")
 
 print(f"-> Pesi classi: {class_weights}")
-
+"""
+RIMUOVO TEMPORANEAMENTE IL WEIGHTED SAMPLE
 # Assegno a ogni video il peso della sua classe
 sample_weights = class_weights[train_labels_numeric]
 
@@ -146,8 +150,8 @@ sampler = WeightedRandomSampler(
     generator=generator,
     replacement=True
 )
-    
-train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=sampler)
+    """
+train_dataloader = DataLoader(train_dataset, batch_size=16, shuffle=True)
 val_dataloader   = DataLoader(validation_dataset,   batch_size=16, shuffle=False)
 test_dataloader  = DataLoader(test_dataset,  batch_size=16, shuffle=False)
 conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
@@ -155,6 +159,10 @@ conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+class_weights_tensor = torch.tensor(
+    class_weights,
+    dtype=torch.float32
+).to(device)
 
 print("Device usato:", device)
 
@@ -171,7 +179,9 @@ grumodel = GRUmodel(
 efficientnet.eval()
 
 # Loss per classificazione multiclasse
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(
+    weight=class_weights_tensor
+)
 
 # L'optimizer aggiorna SOLO la GRU, non MobileNet
 optimizer = optim.AdamW(
@@ -198,13 +208,12 @@ for epoch in range(num_epochs):
 
     for frames, masks, labels in train_dataloader:
         frames = frames.to(device)
+        masks = masks.to(device)
         labels = labels.to(device).long()
 
-        # Estraggo feature con MobileNet senza calcolare gradienti
         with torch.no_grad():
             features = efficientnet(frames)
 
-        # features shape: [B, 32, 1280]
         logits = grumodel(features, masks)
 
         # logits shape: [B, num_classes]
@@ -244,6 +253,7 @@ for epoch in range(num_epochs):
     with torch.no_grad():
         for frames, masks, labels in val_dataloader:
             frames = frames.to(device)
+            masks = masks.to(device)
             labels = labels.to(device).long()
 
             features = efficientnet(frames)

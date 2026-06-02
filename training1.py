@@ -206,40 +206,9 @@ optimizer = optim.AdamW(
 )
 
 num_epochs = 20
-
-CHECKPOINT_PATH = "best_gru_basket_model.pth"
-
-start_epoch = 0
 best_val_acc = 0.0
 
-
-def sposta_optimizer_su_device(optimizer, device):
-    for state in optimizer.state.values():
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                state[key] = value.to(device)
-
-
-if os.path.exists(CHECKPOINT_PATH):
-    print("Best checkpoint trovato. Riprendo l'addestramento dal miglior modello salvato...")
-
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-
-    grumodel.load_state_dict(checkpoint["gru_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    sposta_optimizer_su_device(optimizer, device)
-
-    start_epoch = checkpoint["epoch"]
-    best_val_acc = checkpoint["val_acc"]
-
-    print(f"Riparto dall'epoca {start_epoch + 1}")
-    print(f"Miglior Val Acc precedente: {best_val_acc:.4f}")
-
-else:
-    print("Nessun best checkpoint trovato. Addestramento da zero.")
-
-
-for epoch in range(start_epoch, num_epochs):
+for epoch in range(num_epochs):
 
     # ==========================
     # TRAINING
@@ -348,6 +317,6 @@ for epoch in range(start_epoch, num_epochs):
             "hidden_size": 64,
             "num_layers": 1,
             "num_classes": num_classes
-        }, CHECKPOINT_PATH)
+        }, "best_gru_basket_model.pth")
 
         print("Nuovo miglior modello salvato.")
