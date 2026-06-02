@@ -70,7 +70,7 @@ class VideoDataset(Dataset):
 
                 # Luminosità casuale
                 bright_factor = torch.empty(1).uniform_(0.8, 1.2).item()
-                frames = torch.stack([F.adjust_brightness(f, bright_factor) for f in frames])
+                frames = torch.stack([F.adjust_brightness(f, bright_factor) for f in frames]) 
 
         # Normalizzazione standard finale per tutti i video
         frames = torch.stack([self.transform(f) for f in frames])

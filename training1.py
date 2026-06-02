@@ -10,6 +10,8 @@ from GRUmodel import GRUmodel
 import torch.nn as nn
 import torch.optim as optim
 
+
+
 def aggiorna_confusion_matrix(conf_matrix, labels, preds):
     """
     conf_matrix[classe_vera, classe_predetta]
@@ -59,6 +61,16 @@ DATASET_CARTELLA = os.path.abspath(
 MANIFEST = os.path.abspath(
      os.path.join(DATASET_CARTELLA, "manifest.csv")
  )
+
+SEED = 42
+
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
+
 mobilenet_transforms = transforms.Compose([
     transforms.Normalize(mean=[0.485, 0.456, 0.406], 
                          std=[0.229, 0.224, 0.225])
@@ -69,7 +81,7 @@ train_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
     split="train",
-    maxFrame=32,   
+    maxFrame=64,   
     imgSize=224,
     transform=mobilenet_transforms  
     )
@@ -78,7 +90,7 @@ validation_dataset = VideoDataset(
         manifest_path=MANIFEST,
         video_dir=DATASET_CARTELLA,
         split="val",
-        maxFrame=32,   
+        maxFrame=64,   
         imgSize=224,
         transform=mobilenet_transforms  
     )   
@@ -87,7 +99,7 @@ test_dataset = VideoDataset(
         manifest_path=MANIFEST,
         video_dir=DATASET_CARTELLA,
         split="test",
-        maxFrame=32,   
+        maxFrame=64,   
         imgSize=224,
         transform=mobilenet_transforms  
     )
@@ -125,17 +137,22 @@ print(f"-> Pesi classi: {class_weights}")
 sample_weights = class_weights[train_labels_numeric]
 
 sample_weights = torch.DoubleTensor(sample_weights)
-
+generator = torch.Generator()
+generator.manual_seed(SEED)
 # Sampler pesato
 sampler = WeightedRandomSampler(
     weights=sample_weights,
     num_samples=len(sample_weights),
+    generator=generator,
     replacement=True
 )
     
 train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=sampler)
 val_dataloader   = DataLoader(validation_dataset,   batch_size=16, shuffle=False)
 test_dataloader  = DataLoader(test_dataset,  batch_size=16, shuffle=False)
+conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
+
+
 
 """
 train_frames, train_masks, train_labels_out = next(iter(train_dataloader))
@@ -160,12 +177,7 @@ else:
         
 print("Caro Michele, funziona, perché le classi rare tipo tiroDaTre vengono prese spesso")
 """
-frames, masks, labels = next(iter(train_dataloader))
 
-print(frames.shape)
-print(masks.shape)
-print(labels.shape)
-print(labels[:10])
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -218,7 +230,7 @@ for epoch in range(num_epochs):
             features = mobilenet(frames)
 
         # features shape: [B, 32, 1280]
-        logits = grumodel(features)
+        logits = grumodel(features, masks)
 
         # logits shape: [B, num_classes]
         loss = criterion(logits, labels)
@@ -261,7 +273,7 @@ for epoch in range(num_epochs):
 
             features = mobilenet(frames)
 
-            logits = grumodel(features)
+            logits = grumodel(features, masks)
 
             loss = criterion(logits, labels)
 
