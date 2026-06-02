@@ -5,7 +5,7 @@ from torch.utils.data import DataLoader, WeightedRandomSampler
 from dataset import VideoDataset
 import os
 from torchvision import transforms
-from MobileNetV2 import MobileNetv2
+from EfficientNetmodel import EfficientNetB0
 from GRUmodel import GRUmodel
 import torch.nn as nn
 import torch.optim as optim
@@ -154,36 +154,11 @@ conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
 
 
 
-"""
-train_frames, train_masks, train_labels_out = next(iter(train_dataloader))
-b_train, t_train, c_train, h_train, w_train = train_frames.shape
-train_frames_per_mobilenet = train_frames.reshape(b_train * t_train, c_train, h_train, w_train)
-    
-val_frames, val_masks, val_labels_out = next(iter(val_dataloader))
-b_val, t_val, c_val, h_val, w_val = val_frames.shape
-val_frames_per_mobilenet = val_frames.reshape(b_val * t_val, c_val, h_val, w_val)
-
-test_frames, test_masks, test_labels_out = next(iter(test_dataloader))
-b_test, t_test, c_test, h_test, w_test = test_frames.shape
-test_frames_per_mobilenet = test_frames.reshape(b_test * t_test, c_test, h_test, w_test)    
-
-    #QUESTO NON L'HO CAPITO MA DAVA ERRORE E LO HA FATTO CHI NE SA 
-    # Se train_labels_out è una tupla di stringhe/oggetti, la stampiamo semplicemente convertendola in lista
-if isinstance(train_labels_out, tuple):
-    print(f"Label estratte in questo batch: {list(train_labels_out)}")
-else:
-        # Se invece è un Tensor (numerico), usiamo il classico .tolist()
-    print(f"Label estratte in questo batch: {train_labels_out.tolist()}")
-        
-print("Caro Michele, funziona, perché le classi rare tipo tiroDaTre vengono prese spesso")
-"""
-
-
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 print("Device usato:", device)
 
-mobilenet = MobileNetv2().to(device)
+efficientnet = EfficientNetB0().to(device)
 num_classes = len(train_dataset.class_to_idx)
 grumodel = GRUmodel(
     input_size=1280,
@@ -192,8 +167,8 @@ grumodel = GRUmodel(
     num_classes=num_classes
 ).to(device)
 
-# MobileNet è congelata: la usiamo solo per estrarre feature
-mobilenet.eval()
+
+efficientnet.eval()
 
 # Loss per classificazione multiclasse
 criterion = nn.CrossEntropyLoss()
@@ -206,47 +181,16 @@ optimizer = optim.AdamW(
 )
 
 num_epochs = 20
-
-CHECKPOINT_PATH = "best_gru_basket_model.pth"
-
-start_epoch = 0
 best_val_acc = 0.0
 
-
-def sposta_optimizer_su_device(optimizer, device):
-    for state in optimizer.state.values():
-        for key, value in state.items():
-            if torch.is_tensor(value):
-                state[key] = value.to(device)
-
-
-if os.path.exists(CHECKPOINT_PATH):
-    print("Best checkpoint trovato. Riprendo l'addestramento dal miglior modello salvato...")
-
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-
-    grumodel.load_state_dict(checkpoint["gru_state_dict"])
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
-    sposta_optimizer_su_device(optimizer, device)
-
-    start_epoch = checkpoint["epoch"]
-    best_val_acc = checkpoint["val_acc"]
-
-    print(f"Riparto dall'epoca {start_epoch + 1}")
-    print(f"Miglior Val Acc precedente: {best_val_acc:.4f}")
-
-else:
-    print("Nessun best checkpoint trovato. Addestramento da zero.")
-
-
-for epoch in range(start_epoch, num_epochs):
+for epoch in range(num_epochs):
 
     # ==========================
     # TRAINING
     # ==========================
 
     grumodel.train()
-    mobilenet.eval()
+    efficientnet.eval()
 
     train_loss_sum = 0.0
     train_correct = 0
@@ -258,7 +202,7 @@ for epoch in range(start_epoch, num_epochs):
 
         # Estraggo feature con MobileNet senza calcolare gradienti
         with torch.no_grad():
-            features = mobilenet(frames)
+            features = efficientnet(frames)
 
         # features shape: [B, 32, 1280]
         logits = grumodel(features, masks)
@@ -285,7 +229,7 @@ for epoch in range(start_epoch, num_epochs):
     # ==========================
 
     grumodel.eval()
-    mobilenet.eval()
+    efficientnet.eval()
 
     val_loss_sum = 0.0
     val_correct = 0
@@ -302,7 +246,7 @@ for epoch in range(start_epoch, num_epochs):
             frames = frames.to(device)
             labels = labels.to(device).long()
 
-            features = mobilenet(frames)
+            features = efficientnet(frames)
 
             logits = grumodel(features, masks)
 
@@ -348,6 +292,6 @@ for epoch in range(start_epoch, num_epochs):
             "hidden_size": 64,
             "num_layers": 1,
             "num_classes": num_classes
-        }, CHECKPOINT_PATH)
+        }, "best_gru_basket_model.pth")
 
         print("Nuovo miglior modello salvato.")

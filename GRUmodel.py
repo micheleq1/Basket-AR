@@ -14,7 +14,7 @@ class GRUmodel(nn.Module):
                         hidden_size,
                         num_layers,
                         batch_first=True)
-        self.dropout=nn.Dropout(0.3)
+        self.dropout=nn.Dropout(0.5)
         self.fc1=nn.Linear(hidden_size, num_classes) # num_classes è il numero di classi da predire
 
 
