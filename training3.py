@@ -61,13 +61,11 @@ def stampa_confusion_matrix(conf_matrix, idx_to_class, titolo="Confusion Matrix 
 
 FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
-DATASET_CARTELLA = os.path.abspath(
-    os.path.join(FILE_ATTUALE, "..", "dataset")
-)
+DATASET_CARTELLA = "/content/dataset_veloce/dataset"
+MANIFEST = "/content/dataset_veloce/dataset/manifest.csv"
 
-MANIFEST = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "manifest.csv")
-)
+# Definiamo il percorso del checkpoint su Google Drive per non perderlo
+CHECKPOINT_PATH = "/content/drive/MyDrive/ProgettoColab/best_multitask_basket_model.pth"
 
 
 # ==========================
@@ -142,10 +140,6 @@ print("Classi esito:", train_dataset.outcome_to_idx)
 # ==========================
 # WEIGHTED RANDOM SAMPLER
 # ==========================
-# Il sampler viene calcolato sulle classi originali:
-# idle, non-gioco, passaggio, tiroDaDue0, tiroDaDue1, ecc.
-# In questo modo anche classi rare specifiche come tiroDaTre1
-# vengono pescate piu' spesso.
 
 train_label_names = train_dataset.video_split.iloc[:, 5].values
 
@@ -230,6 +224,23 @@ model = GRUmodelMultitask(
 mobilenet.eval()
 
 
+# --- LOGICA DI CARICAMENTO DEI PESI COMPATIBILE CON IL RESUME ---
+start_epoch = 0
+best_val_score = 0.0
+checkpoint = None
+
+if os.path.exists(CHECKPOINT_PATH):
+    print(f"-> Trovato checkpoint in {CHECKPOINT_PATH}. Caricamento in corso...")
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    start_epoch = checkpoint["epoch"]
+    best_val_score = checkpoint.get("val_score", 0.0)
+    print(f"-> Ripristino completato! Si riparte dall'epoca {start_epoch + 1} con Val Score di riferimento: {best_val_score:.4f}")
+else:
+    print("-> Nessun checkpoint trovato. L'addestramento partirà dall'inizio.")
+# ----------------------------------------------------------------
+
+
 # ==========================
 # LOSS
 # ==========================
@@ -238,8 +249,6 @@ criterion_action = nn.CrossEntropyLoss()
 criterion_outcome = nn.CrossEntropyLoss()
 
 # Peso della loss dell'esito del tiro.
-# Se il modello riconosce bene l'azione ma male segnato/sbagliato,
-# puoi provare 1.5 o 2.0.
 lambda_outcome = 1.0
 
 
@@ -253,15 +262,19 @@ optimizer = optim.AdamW(
     weight_decay=1e-4
 )
 
+# Se è stato caricato un checkpoint, ripristiniamo anche lo stato dell'ottimizzatore
+if checkpoint is not None and "optimizer_state_dict" in checkpoint:
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
 
 # ==========================
 # TRAINING
 # ==========================
 
 num_epochs = 20
-best_val_score = 0.0
 
-for epoch in range(num_epochs):
+# Il ciclo ora parte da start_epoch (0 se nuovo, o l'indice salvato se ripristinato)
+for epoch in range(start_epoch, num_epochs):
 
     # ==========================
     # TRAINING
@@ -472,7 +485,7 @@ for epoch in range(num_epochs):
 
 
     # ==========================
-    # SALVATAGGIO MIGLIOR MODELLO
+    # SALVATAGGIO MIGLIOR MODELLO (Modificato per salvare su Google Drive)
     # ==========================
 
     if val_score > best_val_score:
@@ -502,6 +515,6 @@ for epoch in range(num_epochs):
             "backbone": "MobileNetV2",
             "sampler": "WeightedRandomSampler",
             "augmentation": "rare_classes_flip_brightness"
-        }, "best_multitask_basket_model.pth")
+        }, CHECKPOINT_PATH)  # Salviamo direttamente nel percorso persistente di Drive
 
-        print("Nuovo miglior modello multi-task salvato.")
+        print("Nuovo miglior modello multi-task salvato su Google Drive.")
