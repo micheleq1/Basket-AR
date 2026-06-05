@@ -119,7 +119,10 @@ MANIFEST = os.path.abspath(
      os.path.join(DATASET_CARTELLA, "manifest.csv")
  )
 
-
+CHECKPOINT_PATH = os.path.join(
+    FILE_ATTUALE,
+    "best_multitask_basket.pth"
+)
 CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame"))
 MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame"))
 
@@ -593,6 +596,6 @@ for epoch in range(start_epoch, num_epochs):
             "backbone": "MobileNetV2",
             "sampler": "WeightedRandomSampler",
             "augmentation": "rare_classes_flip_brightness"
-        }, CHECKPOINT_PATH)  # Salviamo direttamente nel percorso persistente di Drive
+        }, CHECKPOINT_PATH)  
 
         print("Nuovo miglior modello multi-task salvato su Google Drive.")
