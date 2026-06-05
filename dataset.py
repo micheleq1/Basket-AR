@@ -53,7 +53,7 @@ class VideoDataset(Dataset):
 
         self.action_mapping = {
             "idle": "idle",
-            "non-gioco": "non_gioco",
+            "non-gioco": "non-gioco",
             "passaggio": "passaggio",
 
             "tiroDaDue0": "tiroDaDue",
@@ -133,7 +133,7 @@ class VideoDataset(Dataset):
         
         if self.transform:
 
-            if self.split == "train" and label_name in self.classi_rare:
+            if self.split == "train":
 
                 # 1. Flip orizzontale casuale (indipendente)
                 if torch.rand(1).item() > 0.5:

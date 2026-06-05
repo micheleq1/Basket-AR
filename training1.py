@@ -154,7 +154,7 @@ conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
 
 
 
-"""
+
 train_frames, train_masks, train_labels_out = next(iter(train_dataloader))
 b_train, t_train, c_train, h_train, w_train = train_frames.shape
 train_frames_per_mobilenet = train_frames.reshape(b_train * t_train, c_train, h_train, w_train)
@@ -176,7 +176,7 @@ else:
     print(f"Label estratte in questo batch: {train_labels_out.tolist()}")
         
 print("Caro Michele, funziona, perché le classi rare tipo tiroDaTre vengono prese spesso")
-"""
+
 
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

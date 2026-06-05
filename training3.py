@@ -9,8 +9,7 @@ import torch.optim as optim
 from dataset import VideoDataset
 from MobileNetV2 import MobileNetv2
 from GrumodelMultitask import GRUmodelMultitask
-
-
+from collections import Counter
 # ==========================
 # UTILITY
 # ==========================
@@ -55,18 +54,74 @@ def stampa_confusion_matrix(conf_matrix, idx_to_class, titolo="Confusion Matrix 
     print()
 
 
+def mostra_classi_batch(dataloader, dataset, num_batch=5):
+    print("\n==============================")
+    print("CONTROLLO CLASSI NEI BATCH")
+    print("==============================")
+
+    for batch_idx, batch in enumerate(dataloader):
+        if batch_idx >= num_batch:
+            break
+
+        frames, masks, action_labels, canestro, is_shot = batch
+
+        # Converto le action label numeriche in nomi leggibili
+        action_names = [
+            dataset.idx_to_action[int(label)]
+            for label in action_labels
+        ]
+
+        conteggio_action = Counter(action_names)
+
+        print(f"\nBatch {batch_idx + 1}")
+        print("Distribuzione classi azione:")
+        for classe, count in conteggio_action.items():
+            print(f"  {classe}: {count}")
+
+        # Controllo solo le clip che sono tiri
+        shot_mask = is_shot.bool()
+
+        print(f"Numero tiri nel batch: {shot_mask.sum().item()}")
+
+        if shot_mask.sum() > 0:
+            canestro_tiri = canestro[shot_mask]
+
+            outcome_names = [
+                dataset.idx_to_outcome[int(label)]
+                for label in canestro_tiri
+            ]
+
+            conteggio_outcome = Counter(outcome_names)
+
+            print("Distribuzione esito tiri:")
+            for esito, count in conteggio_outcome.items():
+                print(f"  {esito}: {count}")
+        else:
+            print("Nessun tiro in questo batch.")
+
 # ==========================
 # PATH
 # ==========================
 
-FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
+"""FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_CARTELLA = "/content/dataset_veloce/dataset"
 MANIFEST = "/content/dataset_veloce/dataset/manifest.csv"
 
 # Definiamo il percorso del checkpoint su Google Drive per non perderlo
-CHECKPOINT_PATH = "/content/drive/MyDrive/ProgettoColab/best_multitask_basket_model.pth"
+CHECKPOINT_PATH = "/content/drive/MyDrive/ProgettoColab/best_multitask_basket_model.pth" """
+FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
+DATASET_CARTELLA = os.path.abspath(
+     os.path.join(FILE_ATTUALE, "..", "dataset")
+)
+MANIFEST = os.path.abspath(
+     os.path.join(DATASET_CARTELLA, "manifest.csv")
+ )
+
+
+CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame"))
+MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame"))
 
 # ==========================
 # SEED
@@ -101,6 +156,8 @@ mobilenet_transforms = transforms.Compose([
 train_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
     split="train",
     maxFrame=48,
     imgSize=224,
@@ -110,6 +167,8 @@ train_dataset = VideoDataset(
 validation_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
     split="val",
     maxFrame=48,
     imgSize=224,
@@ -119,6 +178,8 @@ validation_dataset = VideoDataset(
 test_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
     split="test",
     maxFrame=48,
     imgSize=224,
@@ -141,28 +202,41 @@ print("Classi esito:", train_dataset.outcome_to_idx)
 # WEIGHTED RANDOM SAMPLER
 # ==========================
 
+# Sostituisci tutta la sezione hardcodata con questo:
 train_label_names = train_dataset.video_split.iloc[:, 5].values
 
-train_labels_numeric = np.array([
-    train_dataset.class_to_idx[label_name]
-    for label_name in train_label_names
-], dtype=np.int64)
+# Calcola i conteggi reali dalle label del manifest
+unique_labels, counts = np.unique(train_label_names, return_counts=True)
+class_counts_train = dict(zip(unique_labels, counts))
+print("Conteggi reali per classe:", class_counts_train)
 
-num_original_classes = len(train_dataset.class_to_idx)
+# target_freq con le stesse chiavi esatte del manifest
+target_freq = {
+    'idle':        0.14,
+    'non-gioco':   0.12,
+    'passaggio':   0.32,   # ← aumenta
+    'tiroDaDue0':  0.06,   # ← riduci
+    'tiroDaDue1':  0.06,   # ← riduci
+    'tiroDaTre0':  0.08,   # ← riduci leggermente
+    'tiroDaTre1':  0.08,   # ← riduci leggermente
+    'tiroLibero0': 0.08,   # ← riduci
+    'tiroLibero1': 0.08,   # ← riduci
+}
 
-class_count = np.bincount(
-    train_labels_numeric,
-    minlength=num_original_classes
-)
+# Verifica che tutte le chiavi corrispondano
+for label in unique_labels:
+    if label not in target_freq:
+        print(f"ATTENZIONE: label '{label}' non trovata in target_freq!")
 
-print(f"-> Distribuzione classi originali nel Train: {class_count}")
+class_weights = {
+    cls: target_freq[cls] / class_counts_train[cls]
+    for cls in class_counts_train
+}
 
-class_weights = np.zeros(num_original_classes, dtype=np.float32)
-class_weights[class_count > 0] = 1.0 / class_count[class_count > 0]
-
-print(f"-> Pesi classi originali per sampler: {class_weights}")
-
-sample_weights = class_weights[train_labels_numeric]
+sample_weights = [class_weights[label] for label in train_label_names]
+print("Pesi calcolati:")
+for cls, w in class_weights.items():
+    print(f"  {cls}: {w:.6f}")
 sample_weights = torch.DoubleTensor(sample_weights)
 
 generator = torch.Generator()
@@ -182,22 +256,26 @@ sampler = WeightedRandomSampler(
 
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=16,
+    batch_size=32,
     sampler=sampler
 )
 
 val_dataloader = DataLoader(
     validation_dataset,
-    batch_size=16,
+    batch_size=32,
     shuffle=False
 )
 
 test_dataloader = DataLoader(
     test_dataset,
-    batch_size=16,
+    batch_size=32,
     shuffle=False
 )
-
+mostra_classi_batch(
+    train_dataloader,
+    train_dataset,
+    num_batch=5
+)
 
 # ==========================
 # DEVICE
@@ -215,8 +293,8 @@ mobilenet = MobileNetv2().to(device)
 
 model = GRUmodelMultitask(
     input_size=1280,
-    hidden_size=64,
-    num_layers=1,
+    hidden_size=256,
+    num_layers=2,
     num_action_classes=num_action_classes
 ).to(device)
 
@@ -249,7 +327,7 @@ criterion_action = nn.CrossEntropyLoss()
 criterion_outcome = nn.CrossEntropyLoss()
 
 # Peso della loss dell'esito del tiro.
-lambda_outcome = 1.0
+lambda_outcome = 0.1
 
 
 # ==========================
