@@ -7,6 +7,36 @@ class VideoPreprocessor:
         self.max_frame = max_frame
         self.img_size = img_size
 
+    def crea_indici_inizio_fine(self, total_frames):
+        """
+        Crea gli indici dei frame da estrarre.
+
+        Se il video ha almeno max_frame frame:
+        - prende max_frame/2 frame iniziali
+        - prende max_frame/2 frame finali
+
+        Se il video ha meno di max_frame frame:
+        - prende tutti i frame reali
+        - il padding verrà aggiunto dopo
+        """
+
+        # Caso video corto: prendo tutti i frame reali
+        if total_frames <= self.max_frame:
+            return list(range(total_frames))
+
+        # Caso video lungo: prendo inizio + fine
+        n_first = self.max_frame // 2
+        n_last = self.max_frame - n_first
+
+        first_indices = list(range(0, n_first))
+
+        last_start = total_frames - n_last
+        last_indices = list(range(last_start, total_frames))
+
+        indices = first_indices + last_indices
+
+        return indices
+
     def estrai_frame_da_video(self, percorso_video):
         cap = cv2.VideoCapture(percorso_video)
 
@@ -18,53 +48,41 @@ class VideoPreprocessor:
         frames = []
         mask = []
 
-        if total_frames >= self.max_frame:
-            #PERFORMANCE
-            indici = np.linspace(
-                0,
-                total_frames - 1,
-                self.max_frame,
-                dtype=int
-            )
+        indici = self.crea_indici_inizio_fine(total_frames)
+        indici = set(indici)
 
-            indici = set(indici.tolist())
+        current_index = 0
 
-            current_index = 0
+        while True:
+            ret, frame = cap.read()
 
-            while True:
-                ret, frame = cap.read()
+            if not ret:
+                break
 
-                if not ret:
-                    break
+            if current_index in indici:
+                frame = cv2.resize(
+                    frame,
+                    (self.img_size, self.img_size)
+                )
 
-                if current_index in indici:
-                    frame = cv2.resize(frame, (self.img_size, self.img_size))
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-
-                    frames.append(frame)
-                    mask.append(1)
-
-                current_index += 1
-
-                if len(frames) == self.max_frame:
-                    break
-
-        else:
-
-            while True:
-                ret, frame = cap.read()
-
-                if not ret:
-                    break
-
-                frame = cv2.resize(frame, (self.img_size, self.img_size))
-                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                frame = cv2.cvtColor(
+                    frame,
+                    cv2.COLOR_BGR2RGB
+                )
 
                 frames.append(frame)
                 mask.append(1)
 
+            current_index += 1
+
+            if len(frames) == min(total_frames, self.max_frame):
+                # Se il video è lungo, basta arrivare a max_frame.
+                # Se il video è corto, basta arrivare a total_frames.
+                break
+
         cap.release()
 
+        # Padding finale con frame neri
         while len(frames) < self.max_frame:
             zero_frame = np.zeros(
                 (self.img_size, self.img_size, 3),
