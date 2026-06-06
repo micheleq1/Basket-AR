@@ -10,7 +10,7 @@ from dataset import VideoDataset
 from MobileNetV2 import MobileNetv2
 from GrumodelMultitask import GRUmodelMultitask
 from collections import Counter
-from EfficientNetmodel import EfficientNetB0
+from MobileNetV3Large import MobileNetv3Large
 # ==========================
 # UTILITY
 # ==========================
@@ -293,7 +293,7 @@ print("Device usato:", device)
 # MODELLI
 # ==========================
 
-efficientnet = EfficientNetB0().to(device)
+mobilenet = MobileNetv3Large().to(device)
 
 model = GRUmodelMultitask(
     input_size=1280,
@@ -303,7 +303,7 @@ model = GRUmodelMultitask(
 ).to(device)
 
 # MobileNet e' congelata: viene usata solo come feature extractor.
-efficientnet.eval()
+mobilenet.eval()
 
 
 # --- LOGICA DI CARICAMENTO DEI PESI COMPATIBILE CON IL RESUME ---
@@ -343,16 +343,11 @@ lambda_outcome = 1.0
 # OPTIMIZER
 # ==========================
 
-optimizer = optim.AdamW([
-    {
-        'params': model.parameters(),
-        'lr': 0.001          # GRU: lr normale
-    },
-    {
-        'params': efficientnet.parameters(),
-        'lr': 0.00005        # CNN: lr 20x più basso
-    }
-], weight_decay=1e-4)
+optimizer = optim.AdamW(
+    model.parameters(),
+    lr=0.001,
+    weight_decay=1e-4
+)
 
 # Se è stato caricato un checkpoint, ripristiniamo anche lo stato dell'ottimizzatore
 if checkpoint is not None and "optimizer_state_dict" in checkpoint:
@@ -373,7 +368,7 @@ for epoch in range(start_epoch, num_epochs):
     # ==========================
 
     model.train()
-    efficientnet.train()
+    mobilenet.eval()
 
     train_loss_sum = 0.0
 
@@ -390,8 +385,8 @@ for epoch in range(start_epoch, num_epochs):
         canestro = canestro.to(device).long()
         is_shot = is_shot.to(device)
 
-        #with torch.no_grad():
-        features = efficientnet(frames)
+        with torch.no_grad():
+            features = mobilenet(frames)
 
         action_logits, outcome_logits = model(features, masks)
 
@@ -453,7 +448,7 @@ for epoch in range(start_epoch, num_epochs):
     # ==========================
 
     model.eval()
-    efficientnet.eval()
+    mobilenet.eval()
 
     val_loss_sum = 0.0
 
@@ -483,7 +478,7 @@ for epoch in range(start_epoch, num_epochs):
             canestro = canestro.to(device).long()
             is_shot = is_shot.to(device)
 
-            features = efficientnet(frames)
+            features = mobilenet(frames)
 
             action_logits, outcome_logits = model(features, masks)
 
