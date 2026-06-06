@@ -3,31 +3,30 @@ import torch.nn as nn
 import torchvision.models as models
 
 
+# Nel EfficientNetmodel.py devi sbloccare gli ultimi blocchi
 class EfficientNetB0(nn.Module):
-    def __init__(self, freeze=True):
+    def __init__(self, finetune=True):
         super().__init__()
-
         weights = models.EfficientNet_B0_Weights.DEFAULT
         efficientnet = models.efficientnet_b0(weights=weights)
-
         self.features = efficientnet.features
         self.pool = nn.AdaptiveAvgPool2d((1, 1))
 
-        if freeze:
-            for param in self.parameters():
-                param.requires_grad = False
+        # Congela tutto
+        for param in self.parameters():
+            param.requires_grad = False
+
+        # Sblocca ultimi 3 blocchi (indici 6, 7, 8)
+        if finetune:
+            for i, layer in enumerate(self.features):
+                if i >= 6:
+                    for param in layer.parameters():
+                        param.requires_grad = True
 
     def forward(self, x):
-        # x shape: [Batch, Frame, Canali, Altezza, Larghezza]
-        B, F, C, H, W = x.shape
-
-        # EfficientNet lavora su immagini, quindi trasformiamo i video in batch di frame
-        x = x.reshape(B * F, C, H, W)
-
-        features = self.features(x)              # [B*F, 1280, h, w]
-        features = self.pool(features)           # [B*F, 1280, 1, 1]
-        features = torch.flatten(features, 1)     # [B*F, 1280]
-
-        features = features.reshape(B, F, 1280)  # [B, F, 1280]
-
-        return features
+        B, F, C, A, L = x.shape
+        x = x.reshape(B * F, C, A, L)
+        features = self.features(x)
+        features = self.pool(features)
+        features = torch.flatten(features, 1)
+        return features.reshape(B, F, 1280)
