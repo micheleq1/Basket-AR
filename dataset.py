@@ -130,7 +130,12 @@ class VideoDataset(Dataset):
         frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
         mask = torch.from_numpy(mask).long()
 
-        
+        if self.transform:
+            frames = torch.stack([
+                self.transform(f)
+                for f in frames
+            ])
+        """
         if self.transform:
 
             if self.split == "train":
@@ -155,7 +160,7 @@ class VideoDataset(Dataset):
                 self.transform(f)
                 for f in frames
             ])   
-
+"""
         # ==========================
         # LABEL AZIONE
         # ==========================

@@ -287,7 +287,83 @@ mostra_classi_batch(
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device usato:", device)
 
+# ==========================
+# PESI PER WEIGHTED LOSS
+# ==========================
 
+train_label_names = train_dataset.video_split.iloc[:, 5].values
+
+# --------------------------
+# PESI PER LA TESTA AZIONE
+# --------------------------
+
+train_action_labels_numeric = np.array([
+    train_dataset.action_to_idx[
+        train_dataset.action_mapping[label_name]
+    ]
+    for label_name in train_label_names
+], dtype=np.int64)
+
+action_class_count = np.bincount(
+    train_action_labels_numeric,
+    minlength=num_action_classes
+)
+
+print("Distribuzione classi azione nel train:", action_class_count)
+
+action_class_weights = np.zeros(num_action_classes, dtype=np.float32)
+
+action_class_weights[action_class_count > 0] = 1.0 / np.sqrt(
+    action_class_count[action_class_count > 0]
+)
+
+# Normalizzo per avere pesi medi circa 1
+action_class_weights = action_class_weights / action_class_weights.mean()
+
+print("Pesi loss azione:", action_class_weights)
+
+action_class_weights_tensor = torch.tensor(
+    action_class_weights,
+    dtype=torch.float32
+).to(device)
+
+
+# --------------------------
+# PESI PER LA TESTA ESITO
+# --------------------------
+
+outcome_labels = []
+
+for label_name in train_label_names:
+    if label_name in ["tiroDaDue0", "tiroDaTre0", "tiroLibero0"]:
+        outcome_labels.append(0)  # sbagliato
+
+    elif label_name in ["tiroDaDue1", "tiroDaTre1", "tiroLibero1"]:
+        outcome_labels.append(1)  # segnato
+
+outcome_labels = np.array(outcome_labels, dtype=np.int64)
+
+outcome_class_count = np.bincount(
+    outcome_labels,
+    minlength=2
+)
+
+print("Distribuzione esito tiri nel train:", outcome_class_count)
+
+outcome_class_weights = np.zeros(2, dtype=np.float32)
+
+outcome_class_weights[outcome_class_count > 0] = 1.0 / np.sqrt(
+    outcome_class_count[outcome_class_count > 0]
+)
+
+outcome_class_weights = outcome_class_weights / outcome_class_weights.mean()
+
+print("Pesi loss esito:", outcome_class_weights)
+
+outcome_class_weights_tensor = torch.tensor(
+    outcome_class_weights,
+    dtype=torch.float32
+).to(device)
 # ==========================
 # MODELLI
 # ==========================
@@ -326,11 +402,16 @@ else:
 # LOSS
 # ==========================
 
-criterion_action = nn.CrossEntropyLoss()
-criterion_outcome = nn.CrossEntropyLoss()
+criterion_action = nn.CrossEntropyLoss(
+    weight=action_class_weights_tensor
+)
+
+criterion_outcome = nn.CrossEntropyLoss(
+    weight=outcome_class_weights_tensor
+)
 
 # Peso della loss dell'esito del tiro.
-lambda_outcome = 0.1
+lambda_outcome = 1.0
 
 
 # ==========================
