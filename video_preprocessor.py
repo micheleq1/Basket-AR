@@ -9,13 +9,32 @@ class VideoPreprocessor:
 
     def crea_indici_inizio_fine(self, total_frames):
         """
-        Campionamento uniforme lungo tutto il video per non perdere la parte centrale.
+        Crea gli indici dei frame da estrarre.
+
+        Se il video ha almeno max_frame frame:
+        - prende max_frame/2 frame iniziali
+        - prende max_frame/2 frame finali
+
+        Se il video ha meno di max_frame frame:
+        - prende tutti i frame reali
+        - il padding verrà aggiunto dopo
         """
+
+        # Caso video corto: prendo tutti i frame reali
         if total_frames <= self.max_frame:
             return list(range(total_frames))
 
-        # Genera 'max_frame' indici distribuiti uniformemente dall'inizio alla fine
-        indices = np.linspace(0, total_frames - 1, self.max_frame, dtype=int).tolist()
+        # Caso video lungo: prendo inizio + fine
+        n_first = self.max_frame // 2
+        n_last = self.max_frame - n_first
+
+        first_indices = list(range(0, n_first))
+
+        last_start = total_frames - n_last
+        last_indices = list(range(last_start, total_frames))
+
+        indices = first_indices + last_indices
+
         return indices
 
     def estrai_frame_da_video(self, percorso_video):
