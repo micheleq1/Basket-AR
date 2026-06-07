@@ -330,7 +330,7 @@ criterion_action = nn.CrossEntropyLoss()
 criterion_outcome = nn.CrossEntropyLoss()
 
 # Peso della loss dell'esito del tiro.
-lambda_outcome = 0.1
+lambda_outcome = 1.0
 
 
 # ==========================

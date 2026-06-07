@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 from torch.nn.utils.rnn import pack_padded_sequence
 
-
 class GRUmodelMultitask(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, num_action_classes):
         super().__init__()
@@ -10,19 +9,31 @@ class GRUmodelMultitask(nn.Module):
         self.hidden_size = hidden_size
         self.num_layers = num_layers
 
+        # Aggiunto dropout=0.3 tra i layer della GRU
         self.gru = nn.GRU(
             input_size=input_size,
             hidden_size=hidden_size,
             num_layers=num_layers,
             batch_first=True,
-            bidirectional=True
+            bidirectional=True,
+            dropout=0.3 if num_layers > 1 else 0.0
         )
 
-        self.dropout = nn.Dropout(0.3)
+        # Invece di una sola trasformazione lineare, separiamo i task con un mini-MLP
+        # che aiuta a specializzare le feature per l'azione e per l'esito
+        self.head_action = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(hidden_size, num_action_classes)
+        )
 
-        # Bidirezionale: hidden_size * 2
-        self.fc_action = nn.Linear(hidden_size * 2, num_action_classes)
-        self.fc_outcome = nn.Linear(hidden_size * 2, 2)
+        self.head_outcome = nn.Sequential(
+            nn.Linear(hidden_size * 2, hidden_size),
+            nn.ReLU(),
+            nn.Dropout(0.4),
+            nn.Linear(hidden_size, 2)
+        )
 
     def forward(self, x, mask):
         lengths = mask.sum(dim=1)
@@ -38,23 +49,14 @@ class GRUmodelMultitask(nn.Module):
 
         packed_output, hidden = self.gru(packed_x)
 
-        # hidden shape:
-        # [num_layers * 2, batch_size, hidden_size]
-        # Con bidirectional=True:
-        # hidden[-2] = ultimo hidden forward dell'ultimo layer
-        # hidden[-1] = ultimo hidden backward dell'ultimo layer
-
+        # Estraiamo gli ultimi stati forward e backward
         forward_hidden = hidden[-2]
         backward_hidden = hidden[-1]
 
-        last_hidden = torch.cat(
-            [forward_hidden, backward_hidden],
-            dim=1
-        )
+        last_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
 
-        last_hidden = self.dropout(last_hidden)
-
-        action_logits = self.fc_action(last_hidden)
-        outcome_logits = self.fc_outcome(last_hidden)
+        # Predizioni separate dalle rispettive teste dedicate
+        action_logits = self.head_action(last_hidden)
+        outcome_logits = self.head_outcome(last_hidden)
 
         return action_logits, outcome_logits
