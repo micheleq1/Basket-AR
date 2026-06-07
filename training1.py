@@ -1,16 +1,18 @@
+import os
 import torch
 import numpy as np
-import pandas as pd
 from torch.utils.data import DataLoader, WeightedRandomSampler
-from dataset import VideoDataset
-import os
 from torchvision import transforms
-from MobileNetV2 import MobileNetv2
-from GRUmodel import GRUmodel
 import torch.nn as nn
 import torch.optim as optim
 
-
+from dataset import VideoDataset
+from MobileNetV2 import MobileNetv2
+from GrumodelMultitask import GRUmodelMultitask
+from collections import Counter
+# ==========================
+# UTILITY
+# ==========================
 
 def aggiorna_confusion_matrix(conf_matrix, labels, preds):
     """
@@ -25,8 +27,8 @@ def aggiorna_confusion_matrix(conf_matrix, labels, preds):
     return conf_matrix
 
 
-def stampa_confusion_matrix(conf_matrix, idx_to_class):
-    print("\nConfusion Matrix Validation")
+def stampa_confusion_matrix(conf_matrix, idx_to_class, titolo="Confusion Matrix Validation"):
+    print(f"\n{titolo}")
     print("Righe = classe vera | Colonne = classe predetta\n")
 
     class_names = [
@@ -52,7 +54,62 @@ def stampa_confusion_matrix(conf_matrix, idx_to_class):
     print()
 
 
+def mostra_classi_batch(dataloader, dataset, num_batch=5):
+    print("\n==============================")
+    print("CONTROLLO CLASSI NEI BATCH")
+    print("==============================")
 
+    for batch_idx, batch in enumerate(dataloader):
+        if batch_idx >= num_batch:
+            break
+
+        frames, masks, action_labels, canestro, is_shot = batch
+
+        # Converto le action label numeriche in nomi leggibili
+        action_names = [
+            dataset.idx_to_action[int(label)]
+            for label in action_labels
+        ]
+
+        conteggio_action = Counter(action_names)
+
+        print(f"\nBatch {batch_idx + 1}")
+        print("Distribuzione classi azione:")
+        for classe, count in conteggio_action.items():
+            print(f"  {classe}: {count}")
+
+        # Controllo solo le clip che sono tiri
+        shot_mask = is_shot.bool()
+
+        print(f"Numero tiri nel batch: {shot_mask.sum().item()}")
+
+        if shot_mask.sum() > 0:
+            canestro_tiri = canestro[shot_mask]
+
+            outcome_names = [
+                dataset.idx_to_outcome[int(label)]
+                for label in canestro_tiri
+            ]
+
+            conteggio_outcome = Counter(outcome_names)
+
+            print("Distribuzione esito tiri:")
+            for esito, count in conteggio_outcome.items():
+                print(f"  {esito}: {count}")
+        else:
+            print("Nessun tiro in questo batch.")
+
+# ==========================
+# PATH
+# ==========================
+
+"""FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
+
+DATASET_CARTELLA = "/content/dataset_veloce/dataset"
+MANIFEST = "/content/dataset_veloce/dataset/manifest.csv"
+
+# Definiamo il percorso del checkpoint su Google Drive per non perderlo
+CHECKPOINT_PATH = "/content/drive/MyDrive/ProgettoColab/best_multitask_basket_model.pth" """
 FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_CARTELLA = os.path.abspath(
@@ -61,6 +118,17 @@ DATASET_CARTELLA = os.path.abspath(
 MANIFEST = os.path.abspath(
      os.path.join(DATASET_CARTELLA, "manifest.csv")
  )
+
+CHECKPOINT_PATH = os.path.join(
+    FILE_ATTUALE,
+    "best_multitask_basket.pth"
+)
+CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame"))
+MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame"))
+
+# ==========================
+# SEED
+# ==========================
 
 SEED = 42
 
@@ -71,169 +139,309 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed(SEED)
     torch.cuda.manual_seed_all(SEED)
 
+
+# ==========================
+# TRANSFORM MOBILENET
+# ==========================
+
 mobilenet_transforms = transforms.Compose([
-    transforms.Normalize(mean=[0.485, 0.456, 0.406], 
-                         std=[0.229, 0.224, 0.225])
+    transforms.Normalize(
+        mean=[0.485, 0.456, 0.406],
+        std=[0.229, 0.224, 0.225]
+    )
 ])
 
+
+# ==========================
+# DATASET
+# ==========================
 
 train_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
     split="train",
-    maxFrame=64,   
+    maxFrame=48,
     imgSize=224,
-    transform=mobilenet_transforms  
-    )
-
-validation_dataset = VideoDataset(
-        manifest_path=MANIFEST,
-        video_dir=DATASET_CARTELLA,
-        split="val",
-        maxFrame=64,   
-        imgSize=224,
-        transform=mobilenet_transforms  
-    )   
-
-test_dataset = VideoDataset(
-        manifest_path=MANIFEST,
-        video_dir=DATASET_CARTELLA,
-        split="test",
-        maxFrame=64,   
-        imgSize=224,
-        transform=mobilenet_transforms  
-    )
-
-    # prendiamo le label del train 
-
-    
-# Prendo le label testuali dei video nello split train
-train_label_names = train_dataset.video_split.iloc[:, 5].values
-
-# Converto ogni label testuale nel suo indice numerico
-train_labels_numeric = np.array([
-    train_dataset.class_to_idx[label_name]
-    for label_name in train_label_names
-], dtype=np.int64)
-
-num_classes = len(train_dataset.class_to_idx)
-
-# Conto quanti video ci sono per ogni classe nel train
-class_count = np.bincount(
-    train_labels_numeric,
-    minlength=num_classes
+    transform=mobilenet_transforms
 )
 
-print(f"-> Distribuzione classi nel Train: {class_count}")
+validation_dataset = VideoDataset(
+    manifest_path=MANIFEST,
+    video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
+    split="val",
+    maxFrame=48,
+    imgSize=224,
+    transform=mobilenet_transforms
+)
 
-# Calcolo i pesi inversi, gestendo eventuali classi con 0 elementi nel train
-class_weights = np.zeros(num_classes, dtype=np.float32)
+test_dataset = VideoDataset(
+    manifest_path=MANIFEST,
+    video_dir=DATASET_CARTELLA,
+    cache_dir=CACHE_FRAMES,
+    mask_dir=MASK_FRAMES,
+    split="test",
+    maxFrame=48,
+    imgSize=224,
+    transform=mobilenet_transforms
+)
 
-class_weights[class_count > 0] = 1.0 / class_count[class_count > 0]
 
-print(f"-> Pesi classi: {class_weights}")
+# ==========================
+# CLASSI MULTI-TASK
+# ==========================
 
-# Assegno a ogni video il peso della sua classe
-sample_weights = class_weights[train_labels_numeric]
+num_action_classes = len(train_dataset.action_to_idx)
+num_outcome_classes = 2
 
+print("Classi azione:", train_dataset.action_to_idx)
+print("Classi esito:", train_dataset.outcome_to_idx)
+
+
+# ==========================
+# WEIGHTED RANDOM SAMPLER
+# ==========================
+
+# Sostituisci tutta la sezione hardcodata con questo:
+train_label_names = train_dataset.video_split.iloc[:, 5].values
+
+# Calcola i conteggi reali dalle label del manifest
+unique_labels, counts = np.unique(train_label_names, return_counts=True)
+class_counts_train = dict(zip(unique_labels, counts))
+print("Conteggi reali per classe:", class_counts_train)
+
+# target_freq con le stesse chiavi esatte del manifest
+target_freq = {
+    'idle':        0.14,
+    'non-gioco':   0.12,
+    'passaggio':   0.32,   # ← aumenta
+    'tiroDaDue0':  0.06,   # ← riduci
+    'tiroDaDue1':  0.06,   # ← riduci
+    'tiroDaTre0':  0.08,   # ← riduci leggermente
+    'tiroDaTre1':  0.08,   # ← riduci leggermente
+    'tiroLibero0': 0.08,   # ← riduci
+    'tiroLibero1': 0.08,   # ← riduci
+}
+
+# Verifica che tutte le chiavi corrispondano
+for label in unique_labels:
+    if label not in target_freq:
+        print(f"ATTENZIONE: label '{label}' non trovata in target_freq!")
+
+class_weights = {
+    cls: target_freq[cls] / class_counts_train[cls]
+    for cls in class_counts_train
+}
+
+sample_weights = [class_weights[label] for label in train_label_names]
+print("Pesi calcolati:")
+for cls, w in class_weights.items():
+    print(f"  {cls}: {w:.6f}")
 sample_weights = torch.DoubleTensor(sample_weights)
+
 generator = torch.Generator()
 generator.manual_seed(SEED)
-# Sampler pesato
+
 sampler = WeightedRandomSampler(
     weights=sample_weights,
     num_samples=len(sample_weights),
-    generator=generator,
-    replacement=True
+    replacement=True,
+    generator=generator
 )
-    
-train_dataloader = DataLoader(train_dataset, batch_size=16, sampler=sampler)
-val_dataloader   = DataLoader(validation_dataset,   batch_size=16, shuffle=False)
-test_dataloader  = DataLoader(test_dataset,  batch_size=16, shuffle=False)
-conteggio_loader = torch.zeros(num_classes, dtype=torch.long)
 
 
+# ==========================
+# DATALOADER
+# ==========================
 
+train_dataloader = DataLoader(
+    train_dataset,
+    batch_size=32,
+    sampler=sampler
+)
 
-train_frames, train_masks, train_labels_out = next(iter(train_dataloader))
-b_train, t_train, c_train, h_train, w_train = train_frames.shape
-train_frames_per_mobilenet = train_frames.reshape(b_train * t_train, c_train, h_train, w_train)
-    
-val_frames, val_masks, val_labels_out = next(iter(val_dataloader))
-b_val, t_val, c_val, h_val, w_val = val_frames.shape
-val_frames_per_mobilenet = val_frames.reshape(b_val * t_val, c_val, h_val, w_val)
+val_dataloader = DataLoader(
+    validation_dataset,
+    batch_size=32,
+    shuffle=False
+)
 
-test_frames, test_masks, test_labels_out = next(iter(test_dataloader))
-b_test, t_test, c_test, h_test, w_test = test_frames.shape
-test_frames_per_mobilenet = test_frames.reshape(b_test * t_test, c_test, h_test, w_test)    
+test_dataloader = DataLoader(
+    test_dataset,
+    batch_size=32,
+    shuffle=False
+)
+mostra_classi_batch(
+    train_dataloader,
+    train_dataset,
+    num_batch=5
+)
 
-    #QUESTO NON L'HO CAPITO MA DAVA ERRORE E LO HA FATTO CHI NE SA 
-    # Se train_labels_out è una tupla di stringhe/oggetti, la stampiamo semplicemente convertendola in lista
-if isinstance(train_labels_out, tuple):
-    print(f"Label estratte in questo batch: {list(train_labels_out)}")
-else:
-        # Se invece è un Tensor (numerico), usiamo il classico .tolist()
-    print(f"Label estratte in questo batch: {train_labels_out.tolist()}")
-        
-print("Caro Michele, funziona, perché le classi rare tipo tiroDaTre vengono prese spesso")
-
-
+# ==========================
+# DEVICE
+# ==========================
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
 print("Device usato:", device)
 
+
+# ==========================
+# MODELLI
+# ==========================
+
 mobilenet = MobileNetv2().to(device)
-num_classes = len(train_dataset.class_to_idx)
-grumodel = GRUmodel(
+
+model = GRUmodelMultitask(
     input_size=1280,
-    hidden_size=64,
-    num_layers=1,
-    num_classes=num_classes
+    hidden_size=256,
+    num_layers=2,
+    num_action_classes=num_action_classes
 ).to(device)
 
-# MobileNet è congelata: la usiamo solo per estrarre feature
+# MobileNet e' congelata: viene usata solo come feature extractor.
 mobilenet.eval()
 
-# Loss per classificazione multiclasse
-criterion = nn.CrossEntropyLoss()
 
-# L'optimizer aggiorna SOLO la GRU, non MobileNet
+# --- LOGICA DI CARICAMENTO DEI PESI COMPATIBILE CON IL RESUME ---
+start_epoch = 0
+best_val_score = 0.0
+checkpoint = None
+
+if os.path.exists(CHECKPOINT_PATH):
+    print(f"-> Trovato checkpoint in {CHECKPOINT_PATH}. Caricamento in corso...")
+    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
+    model.load_state_dict(checkpoint["model_state_dict"])
+    start_epoch = checkpoint["epoch"]
+    best_val_score = checkpoint.get("val_score", 0.0)
+    print(f"-> Ripristino completato! Si riparte dall'epoca {start_epoch + 1} con Val Score di riferimento: {best_val_score:.4f}")
+else:
+    print("-> Nessun checkpoint trovato. L'addestramento partirà dall'inizio.")
+# ----------------------------------------------------------------
+
+
+# ==========================
+# MODIFICA 1: CALCOLO DINAMICO DEI PESI PER LE LOSS FUNCTION
+# ==========================
+print("\n[INFO] Calcolo dei pesi bilanciati per CrossEntropyLoss...")
+all_action_indices = []
+all_outcome_indices = []
+
+for lbl in train_label_names:
+    act_name = train_dataset.action_mapping[lbl]
+    act_idx = train_dataset.action_to_idx[act_name]
+    all_action_indices.append(act_idx)
+    
+    if lbl in ["tiroDaDue0", "tiroDaTre0", "tiroLibero0"]:
+        all_outcome_indices.append(0)
+    elif lbl in ["tiroDaDue1", "tiroDaTre1", "tiroLibero1"]:
+        all_outcome_indices.append(1)
+
+all_action_indices = np.array(all_action_indices)
+counts_action = np.bincount(all_action_indices, minlength=num_action_classes)
+counts_action = np.where(counts_action == 0, 1, counts_action) # Sicurezza divisione per zero
+weights_action = len(all_action_indices) / (num_action_classes * counts_action)
+class_weights_action = torch.tensor(weights_action, dtype=torch.float).to(device)
+
+all_outcome_indices = np.array(all_outcome_indices)
+counts_outcome = np.bincount(all_outcome_indices, minlength=num_outcome_classes)
+counts_outcome = np.where(counts_outcome == 0, 1, counts_outcome)
+weights_outcome = len(all_outcome_indices) / (num_outcome_classes * counts_outcome)
+class_weights_outcome = torch.tensor(weights_outcome, dtype=torch.float).to(device)
+
+
+# ==========================
+# LOSS
+# ==========================
+
+# Applicazione dei pesi calcolati per contrastare lo sbilanciamento delle classi
+criterion_action = nn.CrossEntropyLoss(weight=class_weights_action)
+criterion_outcome = nn.CrossEntropyLoss(weight=class_weights_outcome)
+
+# Peso della loss dell'esito del tiro.
+lambda_outcome = 1.0
+
+
+# ==========================
+# OPTIMIZER & SCHEDULER
+# ==========================
+
 optimizer = optim.AdamW(
-    grumodel.parameters(),
+    model.parameters(),
     lr=0.001,
     weight_decay=1e-4
 )
 
-num_epochs = 20
-best_val_acc = 0.0
+# MODIFICA 2: Aggiunta del Learning Rate Scheduler (ReduceLROnPlateau)
+# Abbassa il LR del 50% se la val_loss smette di scendere per 2 epoche di fila
+scheduler = optim.lr_scheduler.ReduceLROnPlateau(
+    optimizer,
+    mode='min',
+    factor=0.5,
+    patience=2
+)
 
-for epoch in range(num_epochs):
+# Se è stato caricato un checkpoint, ripristiniamo anche lo stato dell'ottimizzatore
+if checkpoint is not None and "optimizer_state_dict" in checkpoint:
+    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+
+
+# ==========================
+# TRAINING
+# ==========================
+
+num_epochs = 20
+
+# Il ciclo ora parte da start_epoch (0 se nuovo, o l'indice salvato se ripristinato)
+for epoch in range(start_epoch, num_epochs):
 
     # ==========================
     # TRAINING
     # ==========================
 
-    grumodel.train()
+    model.train()
     mobilenet.eval()
 
     train_loss_sum = 0.0
-    train_correct = 0
-    train_total = 0
 
-    for frames, masks, labels in train_dataloader:
+    train_action_correct = 0
+    train_action_total = 0
+
+    train_outcome_correct = 0
+    train_outcome_total = 0
+
+    for frames, masks, action_labels, canestro, is_shot in train_dataloader:
         frames = frames.to(device)
-        labels = labels.to(device).long()
+        masks = masks.to(device)
+        action_labels = action_labels.to(device).long()
+        canestro = canestro.to(device).long()
+        is_shot = is_shot.to(device)
 
-        # Estraggo feature con MobileNet senza calcolare gradienti
         with torch.no_grad():
             features = mobilenet(frames)
 
-        # features shape: [B, 32, 1280]
-        logits = grumodel(features, masks)
+        action_logits, outcome_logits = model(features, masks)
 
-        # logits shape: [B, num_classes]
-        loss = criterion(logits, labels)
+        # Loss azione: calcolata su tutte le clip.
+        loss_action = criterion_action(
+            action_logits,
+            action_labels
+        )
+
+        # Loss esito: calcolata solo sulle clip che sono tiri.
+        shot_mask = is_shot == True
+
+        if shot_mask.sum() > 0:
+            loss_outcome = criterion_outcome(
+                outcome_logits[shot_mask],
+                canestro[shot_mask]
+            )
+
+            loss = loss_action + lambda_outcome * loss_outcome
+        else:
+            loss = loss_action
 
         optimizer.zero_grad()
         loss.backward()
@@ -241,82 +449,197 @@ for epoch in range(num_epochs):
 
         train_loss_sum += loss.item() * frames.size(0)
 
-        preds = torch.argmax(logits, dim=1)
+        # Accuracy azione
+        action_preds = torch.argmax(action_logits, dim=1)
 
-        train_correct += (preds == labels).sum().item()
-        train_total += labels.size(0)
+        train_action_correct += (action_preds == action_labels).sum().item()
+        train_action_total += action_labels.size(0)
 
-    train_loss = train_loss_sum / train_total
-    train_acc = train_correct / train_total
+        # Accuracy esito solo sui tiri
+        if shot_mask.sum() > 0:
+            outcome_preds = torch.argmax(
+                outcome_logits[shot_mask],
+                dim=1
+            )
+
+            train_outcome_correct += (
+                outcome_preds == canestro[shot_mask]
+            ).sum().item()
+
+            train_outcome_total += shot_mask.sum().item()
+
+    train_loss = train_loss_sum / train_action_total
+    train_action_acc = train_action_correct / train_action_total
+
+    if train_outcome_total > 0:
+        train_outcome_acc = train_outcome_correct / train_outcome_total
+    else:
+        train_outcome_acc = 0.0
+
 
     # ==========================
     # VALIDATION
     # ==========================
 
-    grumodel.eval()
+    model.eval()
     mobilenet.eval()
 
     val_loss_sum = 0.0
-    val_correct = 0
-    val_total = 0
 
-    val_conf_matrix = torch.zeros(
-        num_classes,
-        num_classes,
+    val_action_correct = 0
+    val_action_total = 0
+
+    val_outcome_correct = 0
+    val_outcome_total = 0
+
+    val_action_conf_matrix = torch.zeros(
+        num_action_classes,
+        num_action_classes,
+        dtype=torch.long
+    )
+
+    val_outcome_conf_matrix = torch.zeros(
+        num_outcome_classes,
+        num_outcome_classes,
         dtype=torch.long
     )
 
     with torch.no_grad():
-        for frames, masks, labels in val_dataloader:
+        for frames, masks, action_labels, canestro, is_shot in val_dataloader:
             frames = frames.to(device)
-            labels = labels.to(device).long()
+            masks = masks.to(device)
+            action_labels = action_labels.to(device).long()
+            canestro = canestro.to(device).long()
+            is_shot = is_shot.to(device)
 
             features = mobilenet(frames)
 
-            logits = grumodel(features, masks)
+            action_logits, outcome_logits = model(features, masks)
 
-            loss = criterion(logits, labels)
+            loss_action = criterion_action(
+                action_logits,
+                action_labels
+            )
+
+            shot_mask = is_shot == True
+
+            if shot_mask.sum() > 0:
+                loss_outcome = criterion_outcome(
+                    outcome_logits[shot_mask],
+                    canestro[shot_mask]
+                )
+
+                loss = loss_action + lambda_outcome * loss_outcome
+            else:
+                loss = loss_action
 
             val_loss_sum += loss.item() * frames.size(0)
 
-            preds = torch.argmax(logits, dim=1)
+            # Accuracy azione
+            action_preds = torch.argmax(action_logits, dim=1)
 
-            val_correct += (preds == labels).sum().item()
-            val_total += labels.size(0)
-            val_conf_matrix = aggiorna_confusion_matrix(
-                val_conf_matrix,
-                labels,
-                preds
-        )
+            val_action_correct += (action_preds == action_labels).sum().item()
+            val_action_total += action_labels.size(0)
 
-    val_loss = val_loss_sum / val_total
-    val_acc = val_correct / val_total
+            val_action_conf_matrix = aggiorna_confusion_matrix(
+                val_action_conf_matrix,
+                action_labels,
+                action_preds
+            )
+
+            # Accuracy esito solo sui tiri
+            if shot_mask.sum() > 0:
+                outcome_preds = torch.argmax(
+                    outcome_logits[shot_mask],
+                    dim=1
+                )
+
+                val_outcome_correct += (
+                    outcome_preds == canestro[shot_mask]
+                ).sum().item()
+
+                val_outcome_total += shot_mask.sum().item()
+
+                val_outcome_conf_matrix = aggiorna_confusion_matrix(
+                    val_outcome_conf_matrix,
+                    canestro[shot_mask],
+                    outcome_preds
+                )
+
+    val_loss = val_loss_sum / val_action_total
+    val_action_acc = val_action_correct / val_action_total
+
+    if val_outcome_total > 0:
+        val_outcome_acc = val_outcome_correct / val_outcome_total
+    else:
+        val_outcome_acc = 0.0
+
+    # Score complessivo per salvare il miglior modello.
+    val_score = 0.5 * val_action_acc + 0.5 * val_outcome_acc
+
+    # AGGIORNAMENTO DELLO SCHEDULER (Parte della MODIFICA 2)
+    # Monitora la val_loss per adattare il learning rate dinamicamente
+    scheduler.step(val_loss)
+
+    # ==========================
+    # PRINT RISULTATI
+    # ==========================
 
     print(f"Epoch [{epoch + 1}/{num_epochs}]")
-    print(f"Train Loss: {train_loss:.4f} | Train Acc: {train_acc:.4f}")
-    print(f"Val Loss:   {val_loss:.4f} | Val Acc:   {val_acc:.4f}")
+    print(f"Current LR: {optimizer.param_groups[0]['lr']:.6f}") # Monitoriamo il LR corrente
+    print(f"Train Loss: {train_loss:.4f}")
+    print(f"Train Action Acc:  {train_action_acc:.4f}")
+    print(f"Train Outcome Acc: {train_outcome_acc:.4f}")
+    print(f"Val Loss: {val_loss:.4f}")
+    print(f"Val Action Acc:  {val_action_acc:.4f}")
+    print(f"Val Outcome Acc: {val_outcome_acc:.4f}")
+    print(f"Val Score: {val_score:.4f}")
     print("-" * 50)
-    stampa_confusion_matrix(
-        val_conf_matrix,
-        train_dataset.idx_to_class
-)
 
-    # Salvo il miglior modello
-    if val_acc > best_val_acc:
-        best_val_acc = val_acc
+    stampa_confusion_matrix(
+        val_action_conf_matrix,
+        train_dataset.idx_to_action,
+        titolo="Confusion Matrix Validation - Azione"
+    )
+
+    stampa_confusion_matrix(
+        val_outcome_conf_matrix,
+        train_dataset.idx_to_outcome,
+        titolo="Confusion Matrix Validation - Esito Tiro"
+    )
+
+
+    # ==========================
+    # SALVATAGGIO MIGLIOR MODELLO (Modificato per salvare su Google Drive)
+    # ==========================
+
+    if val_score > best_val_score:
+        best_val_score = val_score
 
         torch.save({
-            "gru_state_dict": grumodel.state_dict(),
+            "model_type": "MobileNetV2_GRU_MultiTask",
+            "model_state_dict": model.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch + 1,
-            "val_acc": val_acc,
+
+            "val_score": val_score,
             "val_loss": val_loss,
-            "class_to_idx": train_dataset.class_to_idx,
-            "idx_to_class": train_dataset.idx_to_class,
+            "val_action_acc": val_action_acc,
+            "val_outcome_acc": val_outcome_acc,
+
+            "action_to_idx": train_dataset.action_to_idx,
+            "idx_to_action": train_dataset.idx_to_action,
+            "outcome_to_idx": train_dataset.outcome_to_idx,
+            "idx_to_outcome": train_dataset.idx_to_outcome,
+
             "input_size": 1280,
             "hidden_size": 64,
             "num_layers": 1,
-            "num_classes": num_classes
-        }, "best_gru_basket_model.pth")
+            "num_action_classes": num_action_classes,
+            "maxFrame": 48,
+            "backbone": "MobileNetV2",
+            "sampler": "WeightedRandomSampler",
+            "augmentation": "rare_classes_flip_brightness"
+        }, CHECKPOINT_PATH)  
 
-        print("Nuovo miglior modello salvato.")
+        print("Nuovo miglior modello multi-task salvato su Google Drive.")

@@ -21,17 +21,20 @@ class GRUmodelMultitask(nn.Module):
 
         # Invece di una sola trasformazione lineare, separiamo i task con un mini-MLP
         # che aiuta a specializzare le feature per l'azione e per l'esito
+        
+        # MODIFICA 3: Incrementato il dropout interno delle teste da 0.4 a 0.5 
+        # per forzare la regolarizzazione ed evitare che la rete impari a memoria le feature.
         self.head_action = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5), 
             nn.Linear(hidden_size, num_action_classes)
         )
 
         self.head_outcome = nn.Sequential(
             nn.Linear(hidden_size * 2, hidden_size),
             nn.ReLU(),
-            nn.Dropout(0.4),
+            nn.Dropout(0.5), 
             nn.Linear(hidden_size, 2)
         )
 
