@@ -370,7 +370,8 @@ def main():
     print(f"Feature RF-DETR salvate in: {RFDETR_FEATURES}\n")
 
     for frames_path in tqdm(frame_files):
-        mask_path = Path(MASK_FRAMES) / frames_path.name
+        mask_name=frames_path.stem + "_mask.npy"
+        mask_path = Path(MASK_FRAMES) / mask_name
         output_path = Path(RFDETR_FEATURES) / frames_path.name
 
         if output_path.exists():

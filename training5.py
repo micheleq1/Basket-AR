@@ -141,7 +141,7 @@ SEED = 42
 MAX_FRAMES = 32
 IMG_SIZE = 704
 
-BATCH_SIZE = 32
+BATCH_SIZE = 8
 NUM_EPOCHS = 30
 
 EFFICIENTNET_FEATURE_DIM = 1280
@@ -241,20 +241,7 @@ print("Classi esito:", train_dataset.outcome_to_idx)
 # BALANCED SAMPLER SENZA REPLACEMENT
 # ==========================
 
-target_counts_per_epoch = {
-    "idle":        400,
-    "non-gioco":   500,
-    "passaggio":   600,
 
-    "tiroDaDue0":  197,
-    "tiroDaDue1":  128,
-
-    "tiroDaTre0":  111,
-    "tiroDaTre1":   46,
-
-    "tiroLibero0":  62,
-    "tiroLibero1":  89,
-}
 
 print("\nTarget esempi per epoca:")
 for cls, count in target_counts_per_epoch.items():
@@ -262,81 +249,12 @@ for cls, count in target_counts_per_epoch.items():
 
 
 
-class BalancedNoReplacementSampler(Sampler):
-    """
-    Sampler bilanciato senza replacement.
 
-    Ogni epoca:
-    - prende al massimo target_counts_per_epoch[class_name] video per classe
-    - non ripete lo stesso video dentro la stessa epoca
-    - se una classe ha meno esempi del target, prende tutti gli esempi disponibili
-    """
-
-    def __init__(self, dataset, target_counts_per_epoch, seed=42):
-        self.dataset = dataset
-        self.target_counts_per_epoch = target_counts_per_epoch
-        self.seed = seed
-        self.epoch = 0
-
-        self.labels = dataset.video_split.iloc[:, 5].values
-
-        self.class_to_indices = {}
-
-        for idx, label in enumerate(self.labels):
-            if label not in self.class_to_indices:
-                self.class_to_indices[label] = []
-
-            self.class_to_indices[label].append(idx)
-
-        for label in self.class_to_indices:
-            self.class_to_indices[label] = np.array(
-                self.class_to_indices[label],
-                dtype=np.int64
-            )
-
-        self.length = 0
-
-        for label, indices in self.class_to_indices.items():
-            target = self.target_counts_per_epoch.get(label, len(indices))
-            self.length += min(target, len(indices))
-
-    def __iter__(self):
-        rng = np.random.default_rng(self.seed + self.epoch)
-
-        selected_indices = []
-
-        for label, indices in self.class_to_indices.items():
-            target = self.target_counts_per_epoch.get(label, len(indices))
-
-            n = min(target, len(indices))
-
-            chosen = rng.choice(
-                indices,
-                size=n,
-                replace=False
-            )
-
-            selected_indices.extend(chosen.tolist())
-
-        rng.shuffle(selected_indices)
-
-        self.epoch += 1
-
-        return iter(selected_indices)
-
-    def __len__(self):
-        return self.length
-
-sampler = BalancedNoReplacementSampler(
-    dataset=train_dataset,
-    target_counts_per_epoch=target_counts_per_epoch,
-    seed=SEED
-)
 # ==========================
 # DATALOADER
 # ==========================
 
-NUM_WORKERS = 8
+NUM_WORKERS = 2
 PIN_MEMORY = True
 
 dataloader_kwargs = {
@@ -351,7 +269,8 @@ if NUM_WORKERS > 0:
 train_dataloader = DataLoader(
     train_dataset,
     batch_size=BATCH_SIZE,
-    sampler=sampler,
+    shuffle=True,
+    generator=torch.Generator().manual_seed(SEED),
     **dataloader_kwargs
 )
 
@@ -368,7 +287,6 @@ test_dataloader = DataLoader(
     shuffle=False,
     **dataloader_kwargs
 )
-
 mostra_classi_batch(
     train_dataloader,
     train_dataset,
@@ -393,6 +311,66 @@ if torch.cuda.is_available():
 
 
 # ==========================
+# WEIGHTED LOSS AZIONE
+# ==========================
+
+action_counts = np.zeros(
+    num_action_classes,
+    dtype=np.float32
+)
+
+for original_label in train_dataset.video_split.iloc[:, 5].values:
+    action_name = train_dataset.action_mapping[original_label]
+    action_idx = train_dataset.action_to_idx[action_name]
+    action_counts[action_idx] += 1
+
+
+# Pesi moderati: 1 / sqrt(numero esempi)
+action_weights = 1.0 / np.sqrt(action_counts)
+
+# Normalizzazione: peso medio = 1
+action_weights = action_weights / action_weights.mean()
+
+action_weights = torch.tensor(
+    action_weights,
+    dtype=torch.float32,
+    device=device
+)
+
+print("\nConteggi e pesi azione:")
+
+for class_idx in range(num_action_classes):
+    class_name = train_dataset.idx_to_action[class_idx]
+
+    print(
+        f"  {class_name}: "
+        f"count={int(action_counts[class_idx])}, "
+        f"weight={action_weights[class_idx].item():.4f}"
+    )
+# ==========================
+# WEIGHTED LOSS ESITO
+# ==========================
+
+outcome_counts = np.array(
+    [370, 263],
+    dtype=np.float32
+)
+
+outcome_weights = 1.0 / np.sqrt(outcome_counts)
+outcome_weights = outcome_weights / outcome_weights.mean()
+
+outcome_weights = torch.tensor(
+    outcome_weights,
+    dtype=torch.float32,
+    device=device
+)
+
+print("\nPesi esito:")
+print(f"  sbagliato: {outcome_weights[0].item():.4f}")
+print(f"  segnato:   {outcome_weights[1].item():.4f}")
+
+
+# ==========================
 # MODELLI
 # ==========================
 
@@ -409,7 +387,7 @@ model = GRUmodelMultitask(
 if torch.cuda.is_available() and torch.cuda.device_count() > 1:
     print("Uso DataParallel su più GPU.")
     efficientnet = nn.DataParallel(efficientnet)
-    model = nn.DataParallel(model)
+    
 
 efficientnet.eval()
 
@@ -421,8 +399,12 @@ print("  RF-DETR:", RFDETR_FEATURE_DIM)
 # LOSS
 # ==========================
 
-criterion_action = nn.CrossEntropyLoss()
-criterion_outcome = nn.CrossEntropyLoss()
+criterion_action = nn.CrossEntropyLoss(
+    weight=action_weights
+)
+criterion_outcome = nn.CrossEntropyLoss(
+    weight=outcome_weights
+)
 
 
 # ==========================
