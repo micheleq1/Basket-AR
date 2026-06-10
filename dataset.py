@@ -8,7 +8,19 @@ import torchvision.transforms.functional as F
 
 
 class VideoDataset(Dataset):
-    def __init__(self, manifest_path, video_dir, split, maxFrame, imgSize, transform=None, cache_dir=None, mask_dir=None):
+    def __init__(
+        self,
+        manifest_path,
+        video_dir,
+        split,
+        maxFrame,
+        imgSize,
+        transform=None,
+        cache_dir=None,
+        mask_dir=None,
+        rfdetr_features_dir=None,
+        rfdetr_feature_dim=19
+    ):
 
         manifest = pd.read_csv(manifest_path)
 
@@ -17,10 +29,13 @@ class VideoDataset(Dataset):
         self.split = split
         self.video_dir = video_dir
         self.transform = transform
-        
-        # Nuove variabili per la gestione opzionale della cache offline
+        self.maxFrame = maxFrame
+
+        # Cache offline dei frame, delle mask e delle feature RF-DETR.
         self.cache_dir = cache_dir
         self.mask_dir = mask_dir
+        self.rfdetr_features_dir = rfdetr_features_dir
+        self.rfdetr_feature_dim = rfdetr_feature_dim
 
         conteggi = self.video_split.iloc[:, 5].value_counts()
         soglia_media = conteggi.mean()
@@ -49,7 +64,6 @@ class VideoDataset(Dataset):
         # ==========================
         # MAPPING AZIONE GENERALE
         # ==========================
-        # Qui trasformiamo le 9 classi originali in 5 classi azione.
 
         self.action_mapping = {
             "idle": "idle",
@@ -83,7 +97,10 @@ class VideoDataset(Dataset):
             for action_name, idx in self.action_to_idx.items()
         }
 
-        # Mapping esito tiro
+        # ==========================
+        # MAPPING ESITO TIRO
+        # ==========================
+
         self.outcome_to_idx = {
             "sbagliato": 0,
             "segnato": 1
@@ -97,6 +114,53 @@ class VideoDataset(Dataset):
     def __len__(self):
         return len(self.video_split)
 
+    def _cache_file_names(self, rel_path):
+        nome_file = rel_path.replace("/", "_").replace("\\", "_") + ".npy"
+        nome_file_mask = rel_path.replace("/", "_").replace("\\", "_") + "_mask.npy"
+        return nome_file, nome_file_mask
+
+    def _load_rfdetr_features(self, nome_file):
+        """
+        Carica feature RF-DETR già estratte.
+        Se mancano, crea zeri [maxFrame, rfdetr_feature_dim].
+        """
+
+        if self.rfdetr_features_dir is None:
+            return np.zeros(
+                (self.maxFrame, self.rfdetr_feature_dim),
+                dtype=np.float32
+            )
+
+        path_features = os.path.join(self.rfdetr_features_dir, nome_file)
+
+        if not os.path.exists(path_features):
+            print(f"ATTENZIONE: feature RF-DETR mancanti: {path_features}")
+            return np.zeros(
+                (self.maxFrame, self.rfdetr_feature_dim),
+                dtype=np.float32
+            )
+
+        features = np.load(path_features).astype(np.float32)
+
+        # Sicurezza forma.
+        if features.ndim != 2:
+            raise ValueError(
+                f"Feature RF-DETR con shape non valida: {path_features}, shape={features.shape}"
+            )
+
+        # Se il numero frame non coincide, taglio o padding.
+        if features.shape[0] > self.maxFrame:
+            features = features[:self.maxFrame]
+
+        elif features.shape[0] < self.maxFrame:
+            padding = np.zeros(
+                (self.maxFrame - features.shape[0], features.shape[1]),
+                dtype=np.float32
+            )
+            features = np.concatenate([features, padding], axis=0)
+
+        return features
+
     def __getitem__(self, idx):
         rel_path = self.video_split.iloc[idx, 1]
         label_name = self.video_split.iloc[idx, 5]
@@ -106,14 +170,13 @@ class VideoDataset(Dataset):
         )
 
         # ==========================
-        # CARICAMENTO DATI (CACHE OFFLINE O PREPROCESSOR)
+        # CARICAMENTO FRAME + MASK
         # ==========================
+
         usato_cache = False
+        nome_file, nome_file_mask = self._cache_file_names(rel_path)
 
         if self.cache_dir and self.mask_dir:
-            nome_file = rel_path.replace("/", "_").replace("\\", "_") + ".npy"
-            nome_file_mask = rel_path.replace("/", "_").replace("\\", "_") + "_mask.npy"
-
             percorso_frames_cache = os.path.join(self.cache_dir, nome_file)
             percorso_mask_cache = os.path.join(self.mask_dir, nome_file_mask)
 
@@ -122,39 +185,51 @@ class VideoDataset(Dataset):
                 mask = np.load(percorso_mask_cache)
                 usato_cache = True
 
-        # Fallback se le cartelle di cache non sono fornite o i file .npy non esistono
         if not usato_cache:
             frames, mask, total_frames = self.preprocessor(video_path)
 
-        # Trasforma l'array NumPy caricato in un torch.Tensor ed esegue il permute
-        frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
-        mask = torch.from_numpy(mask).long()
+        # ==========================
+        # CARICAMENTO FEATURE RF-DETR
+        # ==========================
 
-       
+        rfdetr_features = self._load_rfdetr_features(nome_file)
+
+        # ==========================
+        # CONVERSIONE FRAME / MASK
+        # ==========================
+
+        frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
+        mask = torch.from_numpy(mask).long().reshape(-1)
+
+        rfdetr_features = torch.from_numpy(rfdetr_features).float()
+
+        # ==========================
+        # TRASFORMAZIONI OPZIONALI
+        # ==========================
+        # Nota:
+        # se usi feature RF-DETR già estratte, è meglio lasciare transform=None.
+        # Se applichi flip random qui, le coordinate RF-DETR non corrispondono più ai frame.
+
         if self.transform:
 
             if self.split == "train":
 
-                # 1. Flip orizzontale casuale (indipendente)
                 if torch.rand(1).item() > 0.5:
                     frames = torch.stack([
                         F.hflip(f)
                         for f in frames
                     ])
 
-                # 2. Luminosità casuale (allineata correttamente, ora è indipendente!)
-                # Intervallo ottimizzato a (0.6, 1.4) come richiesto
-                bright_factor = torch.empty(1).uniform_(0.6, 1.4).item()                
+                bright_factor = torch.empty(1).uniform_(0.6, 1.4).item()
                 frames = torch.stack([
                     F.adjust_brightness(f, bright_factor)
                     for f in frames
                 ])
 
-            # Normalizzazione MobileNet finale applicata frame per frame
             frames = torch.stack([
                 self.transform(f)
                 for f in frames
-            ])   
+            ])
 
         # ==========================
         # LABEL AZIONE
@@ -169,26 +244,22 @@ class VideoDataset(Dataset):
 
         if label_name in ["tiroDaDue0", "tiroDaTre0", "tiroLibero0"]:
             is_shot = True
-            canestro = 0   # tiro sbagliato
+            canestro = 0
 
         elif label_name in ["tiroDaDue1", "tiroDaTre1", "tiroLibero1"]:
             is_shot = True
-            canestro = 1   # tiro segnato
+            canestro = 1
 
         else:
             is_shot = False
-            canestro = -1  # non ha senso per passaggio / idle / non-gioco
+            canestro = -1
 
         # ==========================
-        # CONVERSIONE IN TENSORI FINALE
+        # CONVERSIONE IN TENSORI
         # ==========================
 
         action_label = torch.tensor(action_label, dtype=torch.long)
-
-        # canestro deve essere long perché verrà usato con CrossEntropyLoss
         canestro = torch.tensor(canestro, dtype=torch.long)
-
-        # is_shot deve essere bool perché serve come maschera
         is_shot = torch.tensor(is_shot, dtype=torch.bool)
 
-        return frames, mask, action_label, canestro, is_shot
+        return frames, mask, rfdetr_features, action_label, canestro, is_shot

@@ -1,15 +1,16 @@
 import os
+from collections import Counter
+from torchvision import transforms
 import torch
 import numpy as np
-from torch.utils.data import DataLoader, WeightedRandomSampler
-from torchvision import transforms
+from torch.utils.data import DataLoader, Sampler
 import torch.nn as nn
 import torch.optim as optim
 
 from dataset import VideoDataset
 from EfficientNetmodel import EfficientNetB0
 from GrumodelMultitask import GRUmodelMultitask
-from collections import Counter
+
 
 # ==========================
 # UTILITY
@@ -55,7 +56,7 @@ def stampa_confusion_matrix(conf_matrix, idx_to_class, titolo="Confusion Matrix 
     print()
 
 
-def mostra_classi_batch(dataloader, dataset, num_batch=5):
+def mostra_classi_batch(dataloader, dataset, num_batch=3):
     print("\n==============================")
     print("CONTROLLO CLASSI NEI BATCH")
     print("==============================")
@@ -64,9 +65,8 @@ def mostra_classi_batch(dataloader, dataset, num_batch=5):
         if batch_idx >= num_batch:
             break
 
-        frames, masks, action_labels, canestro, is_shot = batch
+        frames, masks, rfdetr_features, action_labels, canestro, is_shot = batch
 
-        # Converto le action label numeriche in nomi leggibili
         action_names = [
             dataset.idx_to_action[int(label)]
             for label in action_labels
@@ -79,14 +79,14 @@ def mostra_classi_batch(dataloader, dataset, num_batch=5):
         for classe, count in conteggio_action.items():
             print(f"  {classe}: {count}")
 
-        # Controllo solo le clip che sono tiri
-        shot_mask = is_shot.bool()
+        print("Shape frames:", tuple(frames.shape))
+        print("Shape RF-DETR features:", tuple(rfdetr_features.shape))
 
+        shot_mask = is_shot.bool()
         print(f"Numero tiri nel batch: {shot_mask.sum().item()}")
 
         if shot_mask.sum() > 0:
             canestro_tiri = canestro[shot_mask]
-
             outcome_names = [
                 dataset.idx_to_outcome[int(label)]
                 for label in canestro_tiri
@@ -100,48 +100,65 @@ def mostra_classi_batch(dataloader, dataset, num_batch=5):
         else:
             print("Nessun tiro in questo batch.")
 
+
 # ==========================
 # PATH
 # ==========================
 
-"""FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
-
-DATASET_CARTELLA = "/content/dataset_veloce/dataset"
-MANIFEST = "/content/dataset_veloce/dataset/manifest.csv"
-
-# Definiamo il percorso del checkpoint su Google Drive per non perderlo
-CHECKPOINT_PATH = "/content/drive/MyDrive/ProgettoColab/best_multitask_basket_model.pth" """
 FILE_ATTUALE = os.path.dirname(os.path.abspath(__file__))
 
 DATASET_CARTELLA = os.path.abspath(
-     os.path.join(FILE_ATTUALE, "..", "dataset")
+    os.path.join(FILE_ATTUALE, "..", "dataset")
 )
-MANIFEST = os.path.abspath(
-     os.path.join(DATASET_CARTELLA, "manifest.csv")
- )
 
-CHECKPOINT_PATH = os.path.join(
-    FILE_ATTUALE,
-    "best_multitask_basket.pth"
+MANIFEST = os.path.abspath(
+    os.path.join(DATASET_CARTELLA, "manifest.csv")
 )
-CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame"))
-MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame"))
+
+CACHE_FRAMES = os.path.abspath(
+    os.path.join(DATASET_CARTELLA, "video_32_frame")
+)
+
+MASK_FRAMES = os.path.abspath(
+    os.path.join(DATASET_CARTELLA, "mask_frame")
+)
+
 RFDETR_FEATURES = os.path.abspath(
     os.path.join(DATASET_CARTELLA, "rfdetr_features")
 )
 
+CHECKPOINT_PATH = os.path.join(
+    FILE_ATTUALE,
+    "best_multitask_basket_effnet_rfdetr.pth"
+)
+
+
 # ==========================
-# SEED
+# CONFIG
 # ==========================
 
 SEED = 42
+MAX_FRAMES = 32
+IMG_SIZE = 704
 
-torch.manual_seed(SEED)
-np.random.seed(SEED)
+BATCH_SIZE = 32
+NUM_EPOCHS = 30
 
-if torch.cuda.is_available():
-    torch.cuda.manual_seed(SEED)
-    torch.cuda.manual_seed_all(SEED)
+EFFICIENTNET_FEATURE_DIM = 1280
+RFDETR_FEATURE_DIM = 19
+GRU_INPUT_SIZE = EFFICIENTNET_FEATURE_DIM + RFDETR_FEATURE_DIM
+
+HIDDEN_SIZE = 256
+NUM_LAYERS = 2
+
+LR = 0.001
+WEIGHT_DECAY = 1e-4
+LAMBDA_OUTCOME = 1.0
+
+
+# ==========================
+# SEED
+# ==========================
 
 
 # ==========================
@@ -154,21 +171,33 @@ mobilenet_transforms = transforms.Compose([
         std=[0.229, 0.224, 0.225]
     )
 ])
+torch.manual_seed(SEED)
+np.random.seed(SEED)
+
+if torch.cuda.is_available():
+    torch.cuda.manual_seed(SEED)
+    torch.cuda.manual_seed_all(SEED)
 
 
 # ==========================
 # DATASET
 # ==========================
+# Nota importante:
+# transform=None perché EfficientNet normalizza internamente.
+# Inoltre non facciamo flip/brightness random qui, perché le feature RF-DETR
+# sono già state estratte sui frame originali e devono rimanere allineate.
 
 train_dataset = VideoDataset(
     manifest_path=MANIFEST,
     video_dir=DATASET_CARTELLA,
     cache_dir=CACHE_FRAMES,
     mask_dir=MASK_FRAMES,
+    rfdetr_features_dir=RFDETR_FEATURES,
+    rfdetr_feature_dim=RFDETR_FEATURE_DIM,
     split="train",
-    maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    maxFrame=MAX_FRAMES,
+    imgSize=IMG_SIZE,
+    transform=None
 )
 
 validation_dataset = VideoDataset(
@@ -176,10 +205,12 @@ validation_dataset = VideoDataset(
     video_dir=DATASET_CARTELLA,
     cache_dir=CACHE_FRAMES,
     mask_dir=MASK_FRAMES,
+    rfdetr_features_dir=RFDETR_FEATURES,
+    rfdetr_feature_dim=RFDETR_FEATURE_DIM,
     split="val",
-    maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    maxFrame=MAX_FRAMES,
+    imgSize=IMG_SIZE,
+    transform=None
 )
 
 test_dataset = VideoDataset(
@@ -187,10 +218,12 @@ test_dataset = VideoDataset(
     video_dir=DATASET_CARTELLA,
     cache_dir=CACHE_FRAMES,
     mask_dir=MASK_FRAMES,
+    rfdetr_features_dir=RFDETR_FEATURES,
+    rfdetr_feature_dim=RFDETR_FEATURE_DIM,
     split="test",
-    maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    maxFrame=MAX_FRAMES,
+    imgSize=IMG_SIZE,
+    transform=None
 )
 
 
@@ -204,85 +237,144 @@ num_outcome_classes = 2
 print("Classi azione:", train_dataset.action_to_idx)
 print("Classi esito:", train_dataset.outcome_to_idx)
 
-
 # ==========================
-# WEIGHTED RANDOM SAMPLER
+# BALANCED SAMPLER SENZA REPLACEMENT
 # ==========================
 
-# Sostituisci tutta la sezione hardcodata con questo:
-train_label_names = train_dataset.video_split.iloc[:, 5].values
+target_counts_per_epoch = {
+    "idle":        400,
+    "non-gioco":   500,
+    "passaggio":   600,
 
-# Calcola i conteggi reali dalle label del manifest
-unique_labels, counts = np.unique(train_label_names, return_counts=True)
-class_counts_train = dict(zip(unique_labels, counts))
-print("Conteggi reali per classe:", class_counts_train)
+    "tiroDaDue0":  197,
+    "tiroDaDue1":  128,
 
-# target_freq con le stesse chiavi esatte del manifest
-target_freq = {
-    'idle':        0.14,
-    'non-gioco':   0.12,
-    'passaggio':   0.32,   # ← aumenta
-    'tiroDaDue0':  0.06,   # ← riduci
-    'tiroDaDue1':  0.06,   # ← riduci
-    'tiroDaTre0':  0.08,   # ← riduci leggermente
-    'tiroDaTre1':  0.08,   # ← riduci leggermente
-    'tiroLibero0': 0.08,   # ← riduci
-    'tiroLibero1': 0.08,   # ← riduci
+    "tiroDaTre0":  111,
+    "tiroDaTre1":   46,
+
+    "tiroLibero0":  62,
+    "tiroLibero1":  89,
 }
 
-# Verifica che tutte le chiavi corrispondano
-for label in unique_labels:
-    if label not in target_freq:
-        print(f"ATTENZIONE: label '{label}' non trovata in target_freq!")
+print("\nTarget esempi per epoca:")
+for cls, count in target_counts_per_epoch.items():
+    print(f"  {cls}: {count}")
 
-class_weights = {
-    cls: target_freq[cls] / class_counts_train[cls]
-    for cls in class_counts_train
-}
 
-sample_weights = [class_weights[label] for label in train_label_names]
-print("Pesi calcolati:")
-for cls, w in class_weights.items():
-    print(f"  {cls}: {w:.6f}")
-sample_weights = torch.DoubleTensor(sample_weights)
 
-generator = torch.Generator()
-generator.manual_seed(SEED)
+class BalancedNoReplacementSampler(Sampler):
+    """
+    Sampler bilanciato senza replacement.
 
-sampler = WeightedRandomSampler(
-    weights=sample_weights,
-    num_samples=len(sample_weights),
-    replacement=True,
-    generator=generator
+    Ogni epoca:
+    - prende al massimo target_counts_per_epoch[class_name] video per classe
+    - non ripete lo stesso video dentro la stessa epoca
+    - se una classe ha meno esempi del target, prende tutti gli esempi disponibili
+    """
+
+    def __init__(self, dataset, target_counts_per_epoch, seed=42):
+        self.dataset = dataset
+        self.target_counts_per_epoch = target_counts_per_epoch
+        self.seed = seed
+        self.epoch = 0
+
+        self.labels = dataset.video_split.iloc[:, 5].values
+
+        self.class_to_indices = {}
+
+        for idx, label in enumerate(self.labels):
+            if label not in self.class_to_indices:
+                self.class_to_indices[label] = []
+
+            self.class_to_indices[label].append(idx)
+
+        for label in self.class_to_indices:
+            self.class_to_indices[label] = np.array(
+                self.class_to_indices[label],
+                dtype=np.int64
+            )
+
+        self.length = 0
+
+        for label, indices in self.class_to_indices.items():
+            target = self.target_counts_per_epoch.get(label, len(indices))
+            self.length += min(target, len(indices))
+
+    def __iter__(self):
+        rng = np.random.default_rng(self.seed + self.epoch)
+
+        selected_indices = []
+
+        for label, indices in self.class_to_indices.items():
+            target = self.target_counts_per_epoch.get(label, len(indices))
+
+            n = min(target, len(indices))
+
+            chosen = rng.choice(
+                indices,
+                size=n,
+                replace=False
+            )
+
+            selected_indices.extend(chosen.tolist())
+
+        rng.shuffle(selected_indices)
+
+        self.epoch += 1
+
+        return iter(selected_indices)
+
+    def __len__(self):
+        return self.length
+
+sampler = BalancedNoReplacementSampler(
+    dataset=train_dataset,
+    target_counts_per_epoch=target_counts_per_epoch,
+    seed=SEED
 )
-
-
 # ==========================
 # DATALOADER
 # ==========================
 
+NUM_WORKERS = 8
+PIN_MEMORY = True
+
+dataloader_kwargs = {
+    "num_workers": NUM_WORKERS,
+    "pin_memory": PIN_MEMORY
+}
+
+if NUM_WORKERS > 0:
+    dataloader_kwargs["persistent_workers"] = True
+    dataloader_kwargs["prefetch_factor"] = 2
+
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=32,
-    sampler=sampler
+    batch_size=BATCH_SIZE,
+    sampler=sampler,
+    **dataloader_kwargs
 )
 
 val_dataloader = DataLoader(
     validation_dataset,
-    batch_size=32,
-    shuffle=False
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    **dataloader_kwargs
 )
 
 test_dataloader = DataLoader(
     test_dataset,
-    batch_size=32,
-    shuffle=False
+    batch_size=BATCH_SIZE,
+    shuffle=False,
+    **dataloader_kwargs
 )
+
 mostra_classi_batch(
     train_dataloader,
     train_dataset,
-    num_batch=5
+    num_batch=3
 )
+
 
 # ==========================
 # DEVICE
@@ -290,6 +382,14 @@ mostra_classi_batch(
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print("Device usato:", device)
+
+if torch.cuda.is_available():
+    torch.backends.cudnn.benchmark = True
+    gpu_count = torch.cuda.device_count()
+    print(f"GPU disponibili: {gpu_count}")
+
+    for i in range(gpu_count):
+        print(f"GPU {i}: {torch.cuda.get_device_name(i)}")
 
 
 # ==========================
@@ -299,47 +399,30 @@ print("Device usato:", device)
 efficientnet = EfficientNetB0().to(device)
 
 model = GRUmodelMultitask(
-    input_size=1280,
-    hidden_size=256,
-    num_layers=2,
+    input_size=GRU_INPUT_SIZE,
+    hidden_size=HIDDEN_SIZE,
+    num_layers=NUM_LAYERS,
     num_action_classes=num_action_classes
 ).to(device)
 
-# MobileNet e' congelata: viene usata solo come feature extractor.
+# Usa entrambe le GPU se disponibili
+if torch.cuda.is_available() and torch.cuda.device_count() > 1:
+    print("Uso DataParallel su più GPU.")
+    efficientnet = nn.DataParallel(efficientnet)
+    model = nn.DataParallel(model)
+
 efficientnet.eval()
 
-
-# --- LOGICA DI CARICAMENTO DEI PESI COMPATIBILE CON IL RESUME ---
-start_epoch = 0
-best_val_score = 0.0
-checkpoint = None
-
-if os.path.exists(CHECKPOINT_PATH):
-    print(f"-> Trovato checkpoint in {CHECKPOINT_PATH}. Caricamento in corso...")
-    checkpoint = torch.load(CHECKPOINT_PATH, map_location=device)
-    model.load_state_dict(checkpoint["model_state_dict"])
-    start_epoch = checkpoint["epoch"]
-    best_val_score = checkpoint.get("val_score", 0.0)
-    print(f"-> Ripristino completato! Si riparte dall'epoca {start_epoch + 1} con Val Score di riferimento: {best_val_score:.4f}")
-else:
-    print("-> Nessun checkpoint trovato. L'addestramento partirà dall'inizio.")
-# ----------------------------------------------------------------
-
+print("Input GRU:", GRU_INPUT_SIZE)
+print("  EfficientNet:", EFFICIENTNET_FEATURE_DIM)
+print("  RF-DETR:", RFDETR_FEATURE_DIM)
 
 # ==========================
 # LOSS
 # ==========================
 
-criterion_action = nn.CrossEntropyLoss(
-
-)
-
-criterion_outcome = nn.CrossEntropyLoss(
-    
-)
-
-# Peso della loss dell'esito del tiro.
-lambda_outcome = 1.0
+criterion_action = nn.CrossEntropyLoss()
+criterion_outcome = nn.CrossEntropyLoss()
 
 
 # ==========================
@@ -348,26 +431,21 @@ lambda_outcome = 1.0
 
 optimizer = optim.AdamW(
     model.parameters(),
-    lr=0.001,
-    weight_decay=1e-4
+    lr=LR,
+    weight_decay=WEIGHT_DECAY
 )
-
-# Se è stato caricato un checkpoint, ripristiniamo anche lo stato dell'ottimizzatore
-if checkpoint is not None and "optimizer_state_dict" in checkpoint:
-    optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
 
 
 # ==========================
 # TRAINING
 # ==========================
 
-num_epochs = 20
+best_val_score = 0.0
 
-# Il ciclo ora parte da start_epoch (0 se nuovo, o l'indice salvato se ripristinato)
-for epoch in range(start_epoch, num_epochs):
+for epoch in range(NUM_EPOCHS):
 
     # ==========================
-    # TRAINING
+    # TRAIN
     # ==========================
 
     model.train()
@@ -381,25 +459,34 @@ for epoch in range(start_epoch, num_epochs):
     train_outcome_correct = 0
     train_outcome_total = 0
 
-    for frames, masks, action_labels, canestro, is_shot in train_dataloader:
-        frames = frames.to(device)
-        masks = masks.to(device)
-        action_labels = action_labels.to(device).long()
-        canestro = canestro.to(device).long()
-        is_shot = is_shot.to(device)
+    for frames, masks, rfdetr_features, action_labels, canestro, is_shot in train_dataloader:
+        frames = frames.to(device, non_blocking=True)
+        masks = masks.to(device, non_blocking=True)
+        rfdetr_features = rfdetr_features.to(device, non_blocking=True).float()
 
+        action_labels = action_labels.to(device, non_blocking=True).long()
+        canestro = canestro.to(device, non_blocking=True).long()
+        is_shot = is_shot.to(device, non_blocking=True)
+        # EfficientNet è congelata: estrae solo feature visive.
         with torch.no_grad():
-            features = efficientnet(frames)
+            visual_features = efficientnet(frames)
+
+        # Concateno:
+        # visual_features  = [B, 32, 1280]
+        # rfdetr_features  = [B, 32, 19]
+        # features         = [B, 32, 1299]
+        features = torch.cat(
+            [visual_features, rfdetr_features],
+            dim=-1
+        )
 
         action_logits, outcome_logits = model(features, masks)
 
-        # Loss azione: calcolata su tutte le clip.
         loss_action = criterion_action(
             action_logits,
             action_labels
         )
 
-        # Loss esito: calcolata solo sulle clip che sono tiri.
         shot_mask = is_shot == True
 
         if shot_mask.sum() > 0:
@@ -408,7 +495,7 @@ for epoch in range(start_epoch, num_epochs):
                 canestro[shot_mask]
             )
 
-            loss = loss_action + lambda_outcome * loss_outcome
+            loss = loss_action + LAMBDA_OUTCOME * loss_outcome
         else:
             loss = loss_action
 
@@ -418,13 +505,11 @@ for epoch in range(start_epoch, num_epochs):
 
         train_loss_sum += loss.item() * frames.size(0)
 
-        # Accuracy azione
         action_preds = torch.argmax(action_logits, dim=1)
 
         train_action_correct += (action_preds == action_labels).sum().item()
         train_action_total += action_labels.size(0)
 
-        # Accuracy esito solo sui tiri
         if shot_mask.sum() > 0:
             outcome_preds = torch.argmax(
                 outcome_logits[shot_mask],
@@ -474,14 +559,21 @@ for epoch in range(start_epoch, num_epochs):
     )
 
     with torch.no_grad():
-        for frames, masks, action_labels, canestro, is_shot in val_dataloader:
+        for frames, masks, rfdetr_features, action_labels, canestro, is_shot in val_dataloader:
             frames = frames.to(device)
             masks = masks.to(device)
+            rfdetr_features = rfdetr_features.to(device).float()
+
             action_labels = action_labels.to(device).long()
             canestro = canestro.to(device).long()
             is_shot = is_shot.to(device)
 
-            features = efficientnet(frames)
+            visual_features = efficientnet(frames)
+
+            features = torch.cat(
+                [visual_features, rfdetr_features],
+                dim=-1
+            )
 
             action_logits, outcome_logits = model(features, masks)
 
@@ -498,13 +590,12 @@ for epoch in range(start_epoch, num_epochs):
                     canestro[shot_mask]
                 )
 
-                loss = loss_action + lambda_outcome * loss_outcome
+                loss = loss_action + LAMBDA_OUTCOME * loss_outcome
             else:
                 loss = loss_action
 
             val_loss_sum += loss.item() * frames.size(0)
 
-            # Accuracy azione
             action_preds = torch.argmax(action_logits, dim=1)
 
             val_action_correct += (action_preds == action_labels).sum().item()
@@ -516,7 +607,6 @@ for epoch in range(start_epoch, num_epochs):
                 action_preds
             )
 
-            # Accuracy esito solo sui tiri
             if shot_mask.sum() > 0:
                 outcome_preds = torch.argmax(
                     outcome_logits[shot_mask],
@@ -543,15 +633,14 @@ for epoch in range(start_epoch, num_epochs):
     else:
         val_outcome_acc = 0.0
 
-    # Score complessivo per salvare il miglior modello.
     val_score = 0.5 * val_action_acc + 0.5 * val_outcome_acc
 
 
     # ==========================
-    # PRINT RISULTATI
+    # PRINT
     # ==========================
 
-    print(f"Epoch [{epoch + 1}/{num_epochs}]")
+    print(f"Epoch [{epoch + 1}/{NUM_EPOCHS}]")
     print(f"Train Loss: {train_loss:.4f}")
     print(f"Train Action Acc:  {train_action_acc:.4f}")
     print(f"Train Outcome Acc: {train_outcome_acc:.4f}")
@@ -575,15 +664,17 @@ for epoch in range(start_epoch, num_epochs):
 
 
     # ==========================
-    # SALVATAGGIO MIGLIOR MODELLO (Modificato per salvare su Google Drive)
+    # SALVATAGGIO MIGLIOR MODELLO
     # ==========================
 
     if val_score > best_val_score:
         best_val_score = val_score
 
+        model_to_save = model.module if isinstance(model, nn.DataParallel) else model
+
         torch.save({
-            "model_type": "MobileNetV2_GRU_MultiTask",
-            "model_state_dict": model.state_dict(),
+            "model_type": "EfficientNetB0_RFDETR_GRU_MultiTask",
+            "model_state_dict": model_to_save.state_dict(),
             "optimizer_state_dict": optimizer.state_dict(),
             "epoch": epoch + 1,
 
@@ -597,14 +688,15 @@ for epoch in range(start_epoch, num_epochs):
             "outcome_to_idx": train_dataset.outcome_to_idx,
             "idx_to_outcome": train_dataset.idx_to_outcome,
 
-            "input_size": 1280,
-            "hidden_size": 64,
-            "num_layers": 1,
+            "input_size": GRU_INPUT_SIZE,
+            "efficientnet_feature_dim": EFFICIENTNET_FEATURE_DIM,
+            "rfdetr_feature_dim": RFDETR_FEATURE_DIM,
+            "hidden_size": HIDDEN_SIZE,
+            "num_layers": NUM_LAYERS,
             "num_action_classes": num_action_classes,
-            "maxFrame": 48,
-            "backbone": "MobileNetV2",
-            "sampler": "WeightedRandomSampler",
-            "augmentation": "rare_classes_flip_brightness"
-        }, CHECKPOINT_PATH)  
-
-        print("Nuovo miglior modello multi-task salvato su Google Drive.")
+            "maxFrame": MAX_FRAMES,
+            "imgSize": IMG_SIZE,
+            "backbone": "EfficientNetB0 frozen + RF-DETR features",
+            "sampler": "BalancedNoReplacementSampler",
+            "augmentation": "none_in_training_rfdetr_aligned"
+        }, CHECKPOINT_PATH)

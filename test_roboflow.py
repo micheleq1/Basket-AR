@@ -1,56 +1,70 @@
 import cv2
-from inference_sdk import InferenceHTTPClient
+from pathlib import Path
+from rfdetr import RFDETRLarge
 
 
-API_KEY = "qUJ8iN6zQ495W6hemNLo"
-MODEL_ID = "yolo-basket-fycvl/1"
+# ============================================================
+# MODIFICA SOLO QUESTI PERCORSI
+# ============================================================
 
-VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\test\tiroDaDue1\clip_001827.mp4"
+CHECKPOINT_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\checkpoint_best_total.pth"
 
-CONF_THRESHOLD = 0.20
-FRAME_STEP = 1
+VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\test\idle\clip_001722.mp4"
 
-client = InferenceHTTPClient(
-    api_url="https://serverless.roboflow.com",
-    api_key=API_KEY
-)
 
-CLASS_RENAME = {
-    "Basket-AR - vdataset basket-ar": "Canestro",
-    "------------------------------":"Palla"
+# ============================================================
+# PARAMETRI
+# ============================================================
+
+CONF_THRESHOLD = 0.40
+
+# Se hai addestrato RF-DETR Large a 704, lascia 704
+INPUT_SIZE = 704
+
+CLASS_NAMES = {
+    0: "Palla",
+    1: "Canestro"
 }
 
 
-def draw_predictions(frame, predictions):
-    for pred in predictions:
-        conf = pred["confidence"]
+# ============================================================
+# DISEGNO BOUNDING BOX
+# ============================================================
 
+def draw_detections(frame, detections):
+    if detections is None:
+        return frame
+
+    if len(detections) == 0:
+        return frame
+
+    for xyxy, class_id, conf in zip(
+        detections.xyxy,
+        detections.class_id,
+        detections.confidence
+    ):
         if conf < CONF_THRESHOLD:
             continue
 
-        original_class_name = pred["class"]
-        class_name = CLASS_RENAME.get(original_class_name, original_class_name)
+        class_id = int(class_id)
+        class_name = CLASS_NAMES.get(class_id, str(class_id))
 
-        x_center = pred["x"]
-        y_center = pred["y"]
-        width = pred["width"]
-        height = pred["height"]
+        x1, y1, x2, y2 = map(int, xyxy)
 
-        x1 = int(x_center - width / 2)
-        y1 = int(y_center - height / 2)
-        x2 = int(x_center + width / 2)
-        y2 = int(y_center + height / 2)
-
-        if class_name.lower() in ["palla", "ball"]:
+        if class_name == "Palla":
             color = (0, 165, 255)  # arancione
-        elif class_name.lower() in ["canestro", "rim", "hoop"]:
-            color = (0, 255, 0)    # verde
         else:
-            color = (255, 0, 0)    # blu
+            color = (0, 255, 0)    # verde
 
         label = f"{class_name} {conf:.2f}"
 
-        cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+        cv2.rectangle(
+            frame,
+            (x1, y1),
+            (x2, y2),
+            color,
+            2
+        )
 
         cv2.putText(
             frame,
@@ -65,57 +79,77 @@ def draw_predictions(frame, predictions):
     return frame
 
 
-cap = cv2.VideoCapture(VIDEO_PATH)
+def main():
+    checkpoint_file = Path(CHECKPOINT_PATH)
+    video_file = Path(VIDEO_PATH)
 
-if not cap.isOpened():
-    raise RuntimeError(f"Impossibile aprire il video: {VIDEO_PATH}")
+    print("Checkpoint:", checkpoint_file)
+    print("Video:", video_file)
 
-frame_index = 0
-last_predictions = []
+    if not checkpoint_file.exists():
+        raise FileNotFoundError(f"Checkpoint non trovato: {checkpoint_file}")
 
-while True:
-    ret, frame = cap.read()
+    if not video_file.exists():
+        raise FileNotFoundError(f"Video non trovato: {video_file}")
 
-    if not ret:
-        break
-
-    if frame_index % FRAME_STEP == 0:
-        result = client.infer(
-            frame,
-            model_id=MODEL_ID
-        )
-
-        last_predictions = result.get("predictions", [])
-
-        print(f"\nFrame {frame_index}")
-        for pred in last_predictions:
-            print(
-                pred["class"],
-                round(pred["confidence"], 3),
-                round(pred["x"], 1),
-                round(pred["y"], 1),
-                round(pred["width"], 1),
-                round(pred["height"], 1)
-            )
-
-    frame_with_boxes = draw_predictions(frame.copy(), last_predictions)
-
-    cv2.putText(
-        frame_with_boxes,
-        f"Frame: {frame_index}",
-        (20, 40),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (255, 255, 255),
-        2
+    print("\nCaricamento modello RF-DETR...")
+    model = RFDETRLarge(
+        pretrain_weights=str(checkpoint_file),
+        num_classes=2
     )
 
-    cv2.imshow("Roboflow - Palla e Canestro", frame_with_boxes)
+    model.optimize_for_inference()
 
-    if cv2.waitKey(1) & 0xFF == ord("q"):
-        break
+    cap = cv2.VideoCapture(str(video_file))
 
-    frame_index += 1
+    if not cap.isOpened():
+        raise RuntimeError(f"Impossibile aprire il video: {video_file}")
 
-cap.release()
-cv2.destroyAllWindows()
+    frame_index = 0
+
+    cv2.namedWindow("RF-DETR PTH - Palla e Canestro", cv2.WINDOW_NORMAL)
+
+    while True:
+        ret, frame = cap.read()
+
+        if not ret:
+            break
+
+        # OpenCV legge in BGR, RF-DETR vuole RGB
+        frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+
+        detections = model.predict(
+            frame_rgb,
+            threshold=CONF_THRESHOLD,
+            shape=(INPUT_SIZE, INPUT_SIZE),
+            include_source_image=False
+        )
+
+        frame_with_boxes = draw_detections(frame.copy(), detections)
+
+        cv2.putText(
+            frame_with_boxes,
+            f"Frame: {frame_index}",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            1,
+            (255, 255, 255),
+            2
+        )
+
+        cv2.imshow("RF-DETR PTH - Palla e Canestro", frame_with_boxes)
+
+        # Premi Q per uscire
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            break
+
+        frame_index += 1
+
+    cap.release()
+    cv2.destroyAllWindows()
+
+    print("\nTest completato.")
+
+
+if __name__ == "__main__":
+    main()
