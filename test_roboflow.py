@@ -9,7 +9,7 @@ from rfdetr import RFDETRLarge
 
 CHECKPOINT_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\checkpoint_best_total.pth"
 
-VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\test\idle\clip_001722.mp4"
+VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\val\tiroLibero0\clip_004307.mp4"
 
 
 # ============================================================
