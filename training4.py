@@ -7,9 +7,13 @@ import torch.nn as nn
 import torch.optim as optim
 
 from dataset import VideoDataset
-from EfficientNetmodel import EfficientNetB0
+from MobileNetV2 import MobileNetv2
 from GrumodelMultitask import GRUmodelMultitask
 from collections import Counter
+from MobileNetV3Large import MobileNetv3Large
+from dinomodel import DINOv3FeatureExtractor
+from transformers import AutoImageProcessor
+
 
 # ==========================
 # UTILITY
@@ -124,11 +128,8 @@ CHECKPOINT_PATH = os.path.join(
     FILE_ATTUALE,
     "best_multitask_basket.pth"
 )
-CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame"))
-MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame"))
-RFDETR_FEATURES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "rfdetr_features")
-)
+CACHE_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "video_32_frame_imgsize_512"))
+MASK_FRAMES = os.path.abspath(os.path.join(DATASET_CARTELLA, "mask_frame_imgsize_512"))
 
 # ==========================
 # SEED
@@ -154,6 +155,15 @@ mobilenet_transforms = transforms.Compose([
         std=[0.229, 0.224, 0.225]
     )
 ])
+model_name = "facebook/dinov3-convnext-large-pretrain-lvd1689m"
+
+processor = AutoImageProcessor.from_pretrained(model_name)
+dino_transform= transforms.Compose([
+    transforms.Normalize(
+        mean=processor.image_mean,
+        std=processor.image_std
+    )
+])
 
 
 # ==========================
@@ -167,8 +177,8 @@ train_dataset = VideoDataset(
     mask_dir=MASK_FRAMES,
     split="train",
     maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    imgSize=512,
+    transform=dino_transform
 )
 
 validation_dataset = VideoDataset(
@@ -178,8 +188,8 @@ validation_dataset = VideoDataset(
     mask_dir=MASK_FRAMES,
     split="val",
     maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    imgSize=512,
+    transform=dino_transform
 )
 
 test_dataset = VideoDataset(
@@ -189,8 +199,8 @@ test_dataset = VideoDataset(
     mask_dir=MASK_FRAMES,
     split="test",
     maxFrame=32,
-    imgSize=704,
-    transform=mobilenet_transforms
+    imgSize=512,
+    transform=dino_transform
 )
 
 
@@ -263,19 +273,19 @@ sampler = WeightedRandomSampler(
 
 train_dataloader = DataLoader(
     train_dataset,
-    batch_size=32,
+    batch_size=8,
     sampler=sampler
 )
 
 val_dataloader = DataLoader(
     validation_dataset,
-    batch_size=32,
+    batch_size=8,
     shuffle=False
 )
 
 test_dataloader = DataLoader(
     test_dataset,
-    batch_size=32,
+    batch_size=8,
     shuffle=False
 )
 mostra_classi_batch(
@@ -296,17 +306,26 @@ print("Device usato:", device)
 # MODELLI
 # ==========================
 
-efficientnet = EfficientNetB0().to(device)
+
+dinov3= DINOv3FeatureExtractor().to(device)
+
+frames_test, masks_test, action_labels_test, canestro_test, is_shot_test = next(iter(train_dataloader))
+frames_test = frames_test[:1].to(device)  # solo 1 video per non saturare la GPU
+
+with torch.no_grad():
+    test_features = dinov3(frames_test)
+
+dino_feature_dim = test_features.shape[-1]
+
+print("Shape feature DINOv3:", test_features.shape)
+print("Dimensione feature DINOv3:", dino_feature_dim)
 
 model = GRUmodelMultitask(
-    input_size=1280,
+    input_size=dino_feature_dim,
     hidden_size=256,
     num_layers=2,
     num_action_classes=num_action_classes
 ).to(device)
-
-# MobileNet e' congelata: viene usata solo come feature extractor.
-efficientnet.eval()
 
 
 # --- LOGICA DI CARICAMENTO DEI PESI COMPATIBILE CON IL RESUME ---
@@ -371,7 +390,7 @@ for epoch in range(start_epoch, num_epochs):
     # ==========================
 
     model.train()
-    efficientnet.eval()
+    dinov3.eval()
 
     train_loss_sum = 0.0
 
@@ -389,7 +408,7 @@ for epoch in range(start_epoch, num_epochs):
         is_shot = is_shot.to(device)
 
         with torch.no_grad():
-            features = efficientnet(frames)
+            features = dinov3(frames)
 
         action_logits, outcome_logits = model(features, masks)
 
@@ -451,7 +470,7 @@ for epoch in range(start_epoch, num_epochs):
     # ==========================
 
     model.eval()
-    efficientnet.eval()
+    dinov3.eval()
 
     val_loss_sum = 0.0
 
@@ -481,7 +500,7 @@ for epoch in range(start_epoch, num_epochs):
             canestro = canestro.to(device).long()
             is_shot = is_shot.to(device)
 
-            features = efficientnet(frames)
+            features = dinov3(frames)
 
             action_logits, outcome_logits = model(features, masks)
 
