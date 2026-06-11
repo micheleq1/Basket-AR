@@ -40,7 +40,6 @@ class GRUmodelMultitask(nn.Module):
             num_layers=num_layers,
             batch_first=True,
             bidirectional=True,
-<<<<<<< HEAD
             dropout=0.3 if num_layers > 1 else 0.0
         )
 
@@ -62,16 +61,6 @@ class GRUmodelMultitask(nn.Module):
             nn.Dropout(0.5), 
             nn.Linear(hidden_size, 2)
         )
-=======
-            dropout=gru_dropout if num_layers > 1 else 0.0,
-        )
-
-        self.dropout_action = nn.Dropout(head_dropout)
-        self.dropout_outcome = nn.Dropout(head_dropout)
-
-        self.fc_action = nn.Linear(hidden_size * 2, num_action_classes)
-        self.fc_outcome = nn.Linear(hidden_size * 2, 2)
->>>>>>> 228d34fa1588fa54e29ab8d7211ba16bc0db1fdc
 
     def forward(
         self,
@@ -128,20 +117,14 @@ class GRUmodelMultitask(nn.Module):
             batch_first=True,
             enforce_sorted=False,
         )
-<<<<<<< HEAD
 
         packed_output, hidden = self.gru(packed_x)
 
         # Estraiamo gli ultimi stati forward e backward
-=======
-        _, hidden = self.gru(packed_x)
-
->>>>>>> 228d34fa1588fa54e29ab8d7211ba16bc0db1fdc
         forward_hidden = hidden[-2]
         backward_hidden = hidden[-1]
         last_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
 
-<<<<<<< HEAD
         last_hidden = torch.cat([forward_hidden, backward_hidden], dim=1)
 
         # Predizioni separate dalle rispettive teste dedicate
@@ -149,9 +132,3 @@ class GRUmodelMultitask(nn.Module):
         outcome_logits = self.head_outcome(last_hidden)
 
         return action_logits, outcome_logits
-=======
-        action_logits = self.fc_action(self.dropout_action(last_hidden))
-        outcome_logits = self.fc_outcome(self.dropout_outcome(last_hidden))
-
-        return action_logits, outcome_logits
->>>>>>> 228d34fa1588fa54e29ab8d7211ba16bc0db1fdc

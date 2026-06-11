@@ -18,6 +18,7 @@ class VideoDataset(Dataset):
         transform=None,
         cache_dir=None,
         mask_dir=None,
+        movinet_features_dir=None,
         rfdetr_features_dir=None,
         rfdetr_feature_dim=19
     ):
@@ -34,6 +35,7 @@ class VideoDataset(Dataset):
         # Cache offline dei frame, delle mask e delle feature RF-DETR.
         self.cache_dir = cache_dir
         self.mask_dir = mask_dir
+        self.movinet_features_dir = movinet_features_dir
         self.rfdetr_features_dir = rfdetr_features_dir
         self.rfdetr_feature_dim = rfdetr_feature_dim
 
@@ -164,102 +166,42 @@ class VideoDataset(Dataset):
     def __getitem__(self, idx):
         rel_path = self.video_split.iloc[idx, 1]
         label_name = self.video_split.iloc[idx, 5]
-
-        video_path = os.path.normpath(
-            os.path.join(self.video_dir, rel_path)
-        )
-
-        # ==========================
-        # CARICAMENTO FRAME + MASK
-        # ==========================
-
-        usato_cache = False
         nome_file, nome_file_mask = self._cache_file_names(rel_path)
 
-        if self.cache_dir and self.mask_dir:
-            percorso_frames_cache = os.path.join(self.cache_dir, nome_file)
-            percorso_mask_cache = os.path.join(self.mask_dir, nome_file_mask)
+        # 1. CARICAMENTO FEATURE MOVINET (Sostituisce i vecchi frame video pesanti)
+        path_movinet = os.path.join(self.movinet_features_dir, nome_file)
+        # Carica il vettore pre-calcolato [480]
+        movinet_features = np.load(path_movinet).astype(np.float32)
+        movinet_features = torch.from_numpy(movinet_features)
 
-            if os.path.exists(percorso_frames_cache) and os.path.exists(percorso_mask_cache):
-                frames = np.load(percorso_frames_cache)
-                mask = np.load(percorso_mask_cache)
-                usato_cache = True
-
-        if not usato_cache:
-            frames, mask, total_frames = self.preprocessor(video_path)
-
-        # ==========================
-        # CARICAMENTO FEATURE RF-DETR
-        # ==========================
-
-        rfdetr_features = self._load_rfdetr_features(nome_file)
-
-        # ==========================
-        # CONVERSIONE FRAME / MASK
-        # ==========================
-
-        frames = torch.from_numpy(frames).permute(0, 3, 1, 2).float() / 255.0
+        # 2. CARICAMENTO MASK TEMPORALE (Serve ancora alla GRU di RF-DETR)
+        percorso_mask_cache = os.path.join(self.mask_dir, nome_file_mask)
+        mask = np.load(percorso_mask_cache)
         mask = torch.from_numpy(mask).long().reshape(-1)
 
+        # 3. CARICAMENTO FEATURE RF-DETR
+        rfdetr_features = self._load_rfdetr_features(nome_file)
         rfdetr_features = torch.from_numpy(rfdetr_features).float()
 
         # ==========================
-        # TRASFORMAZIONI OPZIONALI
+        # LABEL AZIONE ED ESITO (Inalterati rispetto al tuo codice originale)
         # ==========================
-        # Nota:
-        # se usi feature RF-DETR già estratte, è meglio lasciare transform=None.
-        # Se applichi flip random qui, le coordinate RF-DETR non corrispondono più ai frame.
-
-        if self.transform:
-
-            if self.split == "train":
-
-                if torch.rand(1).item() > 0.5:
-                    frames = torch.stack([
-                        F.hflip(f)
-                        for f in frames
-                    ])
-
-                bright_factor = torch.empty(1).uniform_(0.6, 1.4).item()
-                frames = torch.stack([
-                    F.adjust_brightness(f, bright_factor)
-                    for f in frames
-                ])
-
-            frames = torch.stack([
-                self.transform(f)
-                for f in frames
-            ])
-
-        # ==========================
-        # LABEL AZIONE
-        # ==========================
-
         action_name = self.action_mapping[label_name]
         action_label = self.action_to_idx[action_name]
-
-        # ==========================
-        # LABEL CANESTRO / ESITO
-        # ==========================
 
         if label_name in ["tiroDaDue0", "tiroDaTre0", "tiroLibero0"]:
             is_shot = True
             canestro = 0
-
         elif label_name in ["tiroDaDue1", "tiroDaTre1", "tiroLibero1"]:
             is_shot = True
             canestro = 1
-
         else:
             is_shot = False
             canestro = -1
-
-        # ==========================
-        # CONVERSIONE IN TENSORI
-        # ==========================
 
         action_label = torch.tensor(action_label, dtype=torch.long)
         canestro = torch.tensor(canestro, dtype=torch.long)
         is_shot = torch.tensor(is_shot, dtype=torch.bool)
 
-        return frames, mask, rfdetr_features, action_label, canestro, is_shot
+        # Restituiamo movinet_features al posto del vecchio enorme tensore dei frame
+        return movinet_features, mask, rfdetr_features, action_label, canestro, is_shot
