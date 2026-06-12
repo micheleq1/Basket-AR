@@ -9,14 +9,14 @@ from rfdetr import RFDETRLarge
 
 CHECKPOINT_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\checkpoint_best_total.pth"
 
-VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\val\tiroLibero0\clip_004307.mp4"
+VIDEO_PATH = r"C:\Users\miche\Desktop\Basket-AR\dataset\test\tiroDaTre0\clip_001708.mp4"
 
 
 # ============================================================
 # PARAMETRI
 # ============================================================
 
-CONF_THRESHOLD = 0.40
+CONF_THRESHOLD = 0.20
 
 # Se hai addestrato RF-DETR Large a 704, lascia 704
 INPUT_SIZE = 704

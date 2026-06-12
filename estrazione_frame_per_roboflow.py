@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from tqdm import tqdm
-from rfdetr import RFDETRLarge
+from rfdetr import RFDETRMedium
 
 
 # ============================================================
@@ -30,7 +30,7 @@ RFDETR_FEATURES = os.path.abspath(
 )
 
 CHECKPOINT_PATH = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "checkpoint_best_total.pth")
+    os.path.join(DATASET_CARTELLA, "rfedtr_medium.pth")
 )
 
 
@@ -38,7 +38,7 @@ CHECKPOINT_PATH = os.path.abspath(
 # CONFIGURAZIONE RF-DETR
 # ============================================================
 
-INPUT_SIZE = 704
+INPUT_SIZE = 576
 CONF_THRESHOLD = 0.40
 
 # Modifica solo se le classi sono invertite
@@ -357,7 +357,7 @@ def main():
     print("Carico modello RF-DETR...")
     print(CHECKPOINT_PATH)
 
-    model = RFDETRLarge(
+    model = RFDETRMedium(
         pretrain_weights=CHECKPOINT_PATH,
         num_classes=2
     )
