@@ -20,7 +20,7 @@ class MoViNetRFDetrLiveFusion(nn.Module):
     def __init__(self, rfdetr_size=19, rfdetr_encoded_size=128, gru_hidden_size=256, num_action_classes=5):
         super().__init__()
         
-        # 1. Carichiamo MoViNet per usarlo "dal vivo"
+        # 1. Carichiamo MoViNet per usarlo "dal vivo" 
         self.video_backbone = MoViNet(_C.MODEL.MoViNetA2, causal=False, pretrained=True)
         movinet_out_features = self.video_backbone.classifier[0].in_features
         self.video_backbone.classifier = nn.Identity()
