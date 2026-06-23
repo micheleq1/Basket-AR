@@ -17,7 +17,7 @@ class VideoDataset(Dataset):
         transform=None,
         cache_dir=None,
         mask_dir=None,
-        movinet_features_dir=None, # Non più strettamente necessario, ma mantenuto per compatibilità
+        movinet_features_dir=None, 
         rfdetr_features_dir=None,
         rfdetr_feature_dim=19
     ):
@@ -38,7 +38,7 @@ class VideoDataset(Dataset):
 
         # Mapping delle azioni ed etichette ereditato dal tuo codice originale
         self.action_mapping = {
-            "idle": "idle",
+            "idle": "non-gioco",
             "non-gioco": "non-gioco",
             "passaggio": "passaggio",
             "tiroDaDue0": "tiroDaDue",
@@ -49,18 +49,24 @@ class VideoDataset(Dataset):
             "tiroLibero1": "tiroLibero"
         }
         
+        # PRIMA DEFINISCI QUESTO
         self.action_to_idx = {
-            "idle": 0,
-            "non-gioco": 1,
-            "passaggio": 2,
-            "tiroDaDue": 3,
-            "tiroDaTre": 4,
-            "tiroLibero": 5
+            "non-gioco": 0,
+            "passaggio": 1,
+            "tiroDaDue": 2,
+            "tiroDaTre": 3,
+            "tiroLibero": 4
         }
-
+        
+        # SUBITO DOPO INSERISCI QUESTO
         self.idx_to_action = {v: k for k, v in self.action_to_idx.items()}
-        self.outcome_to_idx = {"sbagliato": 0, "segnato": 1}
-        self.idx_to_outcome = {0: "sbagliato", 1: "segnato"}
+
+        # E INFINE QUESTO
+        self.outcome_to_idx = {
+            "non-segnato": 0,
+            "segnato": 1
+        }
+        self.idx_to_outcome = {v: k for k, v in self.outcome_to_idx.items()}
 
     def __len__(self):
         return len(self.video_split)
@@ -94,7 +100,7 @@ class VideoDataset(Dataset):
         frames = torch.from_numpy(frames) # Tensore [T, H, W, C]
 
         # Data Augmentation "Live" eseguita solo nel subset di Training
-        """if self.split == "train":
+        if self.split == "train":
             # Permutiamo temporaneamente in [T, C, H, W] per usare i moduli di torchvision
             frames = frames.permute(0, 3, 1, 2).float()
             
@@ -108,7 +114,7 @@ class VideoDataset(Dataset):
                 frames = torch.stack([F.adjust_brightness(f, bright_factor) for f in frames])
             
             # Ritorniamo alla forma standard [T, H, W, C] in formato uint8 per risparmiare memoria
-            frames = frames.permute(0, 2, 3, 1).to(torch.uint8)"""
+            frames = frames.permute(0, 2, 3, 1).to(torch.uint8)
 
         if self.transform:
             frames = torch.stack([self.transform(f) for f in frames])

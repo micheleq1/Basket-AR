@@ -18,7 +18,7 @@ df = pd.read_csv(MANIFEST)
 
 
 MAX_FRAME = 32
-IMG_SIZE = 704
+IMG_SIZE = 896
 
 video_preprocessor = VideoPreprocessor(
     max_frame=MAX_FRAME,
@@ -26,11 +26,11 @@ video_preprocessor = VideoPreprocessor(
 )
 
 CACHE_FRAMES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "video_32_frame")
+    os.path.join(DATASET_CARTELLA, "video_32_frame_896")
 )
 
 MASK_FRAMES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "mask_frame")
+    os.path.join(DATASET_CARTELLA, "mask_frame_896")
 )
 
 os.makedirs(CACHE_FRAMES, exist_ok=True)

@@ -4,7 +4,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 from tqdm import tqdm
-from rfdetr import RFDETRMedium
+from rfdetr import RFDETRLarge
 
 
 # ============================================================
@@ -18,19 +18,19 @@ DATASET_CARTELLA = os.path.abspath(
 )
 
 CACHE_FRAMES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "video_32_frame")
+    os.path.join(DATASET_CARTELLA, "video_32_frame_896")
 )
 
 MASK_FRAMES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "mask_frame")
+    os.path.join(DATASET_CARTELLA, "mask_frame_896")
 )
 
 RFDETR_FEATURES = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "rfdetr_features")
+    os.path.join(DATASET_CARTELLA, "rfdetr_features_896")
 )
 
 CHECKPOINT_PATH = os.path.abspath(
-    os.path.join(DATASET_CARTELLA, "rfedtr_medium.pth")
+    os.path.join(DATASET_CARTELLA, "checkpoint_best_regular.pth")
 )
 
 
@@ -38,7 +38,7 @@ CHECKPOINT_PATH = os.path.abspath(
 # CONFIGURAZIONE RF-DETR
 # ============================================================
 
-INPUT_SIZE = 576
+INPUT_SIZE = 896
 CONF_THRESHOLD = 0.40
 
 # Modifica solo se le classi sono invertite
@@ -357,12 +357,12 @@ def main():
     print("Carico modello RF-DETR...")
     print(CHECKPOINT_PATH)
 
-    model = RFDETRMedium(
+    model = RFDETRLarge(
         pretrain_weights=CHECKPOINT_PATH,
         num_classes=2
     )
 
-    model.optimize_for_inference()
+    #model.optimize_for_inference()
 
     frame_files = sorted(Path(CACHE_FRAMES).glob("*.npy"))
 

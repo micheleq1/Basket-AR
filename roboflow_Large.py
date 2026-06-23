@@ -3,8 +3,8 @@ from pathlib import Path
 from rfdetr import RFDETRLarge
 
 
-DATASET_DIR = "/home/vrlab/Scrivania/BasketAR/Gruppo19/Basket-AR/dataset_rfdetr"
-OUTPUT_DIR = "/home/vrlab/Scrivania/BasketAR/Gruppo19/Basket-AR/runs_rfdetr/rfdetr_large_palla_canestro"
+DATASET_DIR = "/home/vrlab/Scrivania/BasketAR/Gruppo19/dataset/dataset_rfdetr"
+OUTPUT_DIR = "/home/vrlab/Scrivania/BasketAR/Gruppo19/dataset/runs_rfdetr_896/rfdetr_large_palla_canestro_896"
 
 
 def main():

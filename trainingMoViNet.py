@@ -11,12 +11,99 @@ from torch.nn.utils.rnn import pack_padded_sequence
 from dataset import VideoDataset
 from movinets import MoViNet
 from movinets.config import _C
-from MoViNetMultiTask import MoViNetRFDetrLiveFusion
+
 # ============================================================
 # NUOVO MODELLO: LIVE FINE-TUNING (MoViNet + RF-DETR)
 # ============================================================
 
+class MoViNetRFDetrLiveFusion(nn.Module):
+    # QUI inseriamo movinet_out_features=640
+    def __init__(self, movinet_out_features=640, rfdetr_size=19, rfdetr_encoded_size=128, gru_hidden_size=256, num_action_classes=5):
+        super().__init__()
+        
+        # 1. Carichiamo MoViNet per usarlo "dal vivo" 
+        self.video_backbone = MoViNet(_C.MODEL.MoViNetA2, causal=False, pretrained=True)
+        
+        # RIMOSSA LA RIGA CHE CAUSAVA L'ERRORE!
+        # Disattiviamo direttamente il classificatore originale
+        self.video_backbone.classifier = nn.Identity()
+        
+        # SBLOCCHIAMO GLI ULTIMI STRATI (FINE-TUNING)
+        for param in self.video_backbone.parameters():
+            param.requires_grad = False
+            
+        for param in self.video_backbone.blocks[-1].parameters():
+            param.requires_grad = True
 
+        # 2. Modulo Geometrico
+        self.rfdetr_encoder = nn.Sequential(
+            nn.LayerNorm(rfdetr_size),
+            nn.Linear(rfdetr_size, rfdetr_encoded_size),
+            nn.ReLU(),
+            nn.Dropout(0.10)
+        )
+        self.rfdetr_gru = nn.GRU(
+            input_size=rfdetr_encoded_size,
+            hidden_size=gru_hidden_size,
+            num_layers=1,
+            batch_first=True,
+            bidirectional=True
+        )
+        
+        total_fusion_dim = movinet_out_features + (gru_hidden_size * 2)
+        
+        # 3. LayerNorm di Fusione
+        self.fusion_norm = nn.LayerNorm(total_fusion_dim)
+        
+        self.head_action = nn.Sequential(
+            nn.Linear(total_fusion_dim, 256),
+            nn.ReLU(),
+            nn.Dropout(0.20),
+            nn.Linear(256, num_action_classes)
+        )
+        self.head_outcome = nn.Sequential(
+            nn.Linear(total_fusion_dim, 128),
+            nn.ReLU(),
+            nn.Dropout(0.20),
+            nn.Linear(128, 2)
+        )
+
+    def forward(self, video_frames, rfdetr_features, mask):
+        # 1. Preparazione frame per MoViNet: [B, C, T, H, W]
+        x = video_frames.permute(0, 4, 1, 2, 3).float() / 255.0
+        
+        B, C, T, H, W = x.shape
+        x = x.reshape(B*T, C, H, W)
+        x = torch.nn.functional.interpolate(x, size=(224, 224), mode='bilinear', align_corners=False)
+        x = x.reshape(B, C, T, 224, 224)
+        
+        # ESTRAZIONE VIDEO "LIVE"
+        movinet_feat = self.video_backbone(x) 
+
+        # --- FIX: MEDIA SPAZIO-TEMPORALE (POOLING) ---
+        # MoViNet restituisce un tensore 5D. Facciamo la media su Tempo, Altezza e Larghezza
+        # per ottenere un vettore piatto [B, 640]
+        if movinet_feat.dim() == 5:
+            movinet_feat = movinet_feat.mean(dim=[2, 3, 4]) 
+        # ---------------------------------------------
+
+        # 2. Elaborazione ramo geometrico
+        B_rf, T_rf, _ = rfdetr_features.shape
+        rf_enc = self.rfdetr_encoder(rfdetr_features)
+        lengths = mask.to(dtype=torch.bool).sum(dim=1).clamp(min=1, max=T_rf).cpu()
+        packed_rf = pack_padded_sequence(rf_enc, lengths, batch_first=True, enforce_sorted=False)
+        _, hidden = self.rfdetr_gru(packed_rf)
+        rf_geom_vector = torch.cat([hidden[-2], hidden[-1]], dim=1)
+        
+        # 3. FUSIONE
+        fused_context = torch.cat([movinet_feat, rf_geom_vector], dim=-1)
+        fused_context = self.fusion_norm(fused_context)
+        
+        # 4. OUTPUT
+        action_logits = self.head_action(fused_context)
+        outcome_logits = self.head_outcome(fused_context)
+        
+        return action_logits, outcome_logits
 
 # ============================================================
 # CONFIGURAZIONE
@@ -29,19 +116,19 @@ DATASET_CARTELLA = os.path.abspath(
 )
 
 MANIFEST = os.path.join(DATASET_CARTELLA, "manifest.csv")
-CACHE_FRAMES = os.path.join(DATASET_CARTELLA, "video_32_frame")
-MASK_FRAMES = os.path.join(DATASET_CARTELLA, "mask_frame")
-RFDETR_FEATURES = os.path.join(DATASET_CARTELLA, "rfdetr_features")
+CACHE_FRAMES = os.path.join(DATASET_CARTELLA, "video_32_frame_896")
+MASK_FRAMES = os.path.join(DATASET_CARTELLA, "mask_frame_896")
+RFDETR_FEATURES = os.path.join(DATASET_CARTELLA, "rfdetr_features_896")
 
 CHECKPOINT_PATH = os.path.join(
     FILE_ATTUALE,
-    "best_multitask_basket_movinet_live.pth",
+    "best_multitask_basket_movinet_live_896.pth",
 )
 
 SEED = 42
 
 MAX_FRAMES = 32
-IMG_SIZE = 704
+IMG_SIZE = 896
 
 BATCH_SIZE = 8
 NUM_EPOCHS = 30
@@ -283,7 +370,6 @@ outcome_weights = torch.tensor(outcome_weights_np, dtype=torch.float32, device=d
 
 # Ora istanziamo la versione "Live"
 model = MoViNetRFDetrLiveFusion(
-    movinet_size=MOVINET_FEATURE_DIM,   # <--- AGGIUNGI QUESTA RIGA
     rfdetr_size=RFDETR_FEATURE_DIM,
     rfdetr_encoded_size=RFDETR_ENCODED_DIM,
     gru_hidden_size=HIDDEN_SIZE,
